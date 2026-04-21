@@ -1,0 +1,12 @@
+[package]
+name = "topology-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+topology-api = { path = "../topology-api" }
+topology-domain = { path = "../topology-domain" }
+topology-storage = { path = "../topology-storage" }
+topology-sync = { path = "../topology-sync" }
