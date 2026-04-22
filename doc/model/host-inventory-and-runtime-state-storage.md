@@ -41,24 +41,12 @@
 
 - `host_id`
 - `tenant_id`
-- `environment_id`
 - `host_name`
 - `machine_id`
-- `serial_number`
-- `cloud_instance_id`
-- `vendor`
-- `model`
-- `arch`
 - `os_name`
 - `os_version`
-- `kernel_version`
-- `cpu_model`
-- `cpu_core_count`
-- `memory_total_bytes`
-- `inventory_blob_ref?`
-- `first_seen_at`
+- `created_at`
 - `last_inventory_at`
-- `inventory_revision`
 
 建议唯一约束：
 
@@ -66,8 +54,7 @@
 
 建议索引：
 
-- `(tenant_id, environment_id, host_name)`
-- `(cloud_instance_id)`
+- `(tenant_id, host_name)`
 - `(machine_id)`
 
 ---
@@ -111,6 +98,19 @@
 - `(host_id, observed_at desc)`
 - `(observed_at desc)`
 - `(agent_health, observed_at desc)`
+
+---
+
+## 4.1 review 后的存储边界
+
+第一版收敛以下规则：
+
+- `HostInventory` 只保留最小目录字段
+- 主机当前 IP 不写入 `host_runtime_state`，统一通过 `host_net_assoc` 建模
+- `degraded_reason` / `last_error` 仅保存摘要；详细原文走结构化日志或 blob
+- 应用环境归属不进入 `host_inventory` 主表，改由独立关系维护
+
+这样可以避免主机主表和关系表表达同一事实。
 
 ---
 

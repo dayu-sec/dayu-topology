@@ -110,7 +110,6 @@ Subject {
 HostGroup {
   host_group_id
   tenant_id
-  environment_id
   name
   group_type
   parent_group_id?
@@ -132,6 +131,8 @@ HostGroup {
 
 - 大多数责任不是逐台维护，而是按服务、业务、环境或集群继承
 - `HostGroup` 是责任归属和批量治理的中间层，不应与运行时状态混用
+- 若应用环境会频繁变化，不建议把 `environment_id` 作为 `HostGroup` 稳定字段
+- 应改由独立 membership / scope relation 表达
 
 ### 4.3 `HostGroupMembership`
 
@@ -356,7 +357,6 @@ create table subject (
 create table host_group (
   host_group_id uuid primary key,
   tenant_id uuid not null,
-  environment_id uuid not null,
   name text not null,
   group_type text not null,
   parent_group_id uuid references host_group(host_group_id),
@@ -368,11 +368,11 @@ create table host_group (
 
 建议唯一约束：
 
-- `(tenant_id, environment_id, name)`
+- `(tenant_id, name)`
 
 建议索引：
 
-- `(tenant_id, environment_id, group_type)`
+- `(tenant_id, group_type)`
 - `(parent_group_id)`
 
 ### 8.3 `host_group_membership`

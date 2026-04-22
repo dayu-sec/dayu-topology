@@ -27,3 +27,17 @@
 14. [model/README.md](./model/README.md)
 15. [model/unified-topology-schema.md](./model/unified-topology-schema.md)
 16. [roadmap/bootstrap-plan.md](./roadmap/bootstrap-plan.md)
+
+## Glossary 同步
+
+当 `doc/glossary.md` 中的标准术语表发生变化后，可运行：
+
+```bash
+python3 scripts/sync_glossary.py
+```
+
+用途：
+
+- 把 glossary 中的标准术语中英说明同步到带有 `GLOSSARY_SYNC` 标记的文档
+- 避免多个模型文档各自维护一份术语解释
+- 让 glossary 成为单一术语源

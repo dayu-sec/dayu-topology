@@ -96,8 +96,8 @@ PodInventory {
 以下对象都属于关系边：
 
 - `PodPlacement`
-- `PodNetworkAttachment`
-- `HostNetworkAttachment`
+- `PodNetAssoc`
+- `HostNetAssoc`
 
 也就是说：
 
@@ -108,6 +108,25 @@ PodInventory {
 ---
 
 ## 5. 对象模型
+
+### 5.0 核心术语中英对照
+
+说明：
+
+- `Assoc` 是 `association` 的缩写
+- 在本模型里表示对象与网络段之间的接入关系
+
+<!-- GLOSSARY_SYNC:START terms=HostInventory,PodInventory,NetworkDomain,NetworkSegment,PodPlacement,PodNetAssoc,HostNetAssoc -->
+| 术语 | 中文名 | English | 中文说明 |
+| --- | --- | --- | --- |
+| `HostInventory` | 主机目录对象 | Host inventory object | 表示稳定的主机资产目录对象，回答“这台主机是谁”。 |
+| `PodInventory` | Pod 目录对象 | Pod inventory object | 表示稳定的 Pod 目录对象，是实际运行副本，不是服务定义。 |
+| `NetworkDomain` | 网络域对象 | Network domain object | 表示较高层的网络边界，下挂多个网络段。 |
+| `NetworkSegment` | 网络段对象 | Network segment object | 表示具体可挂接 host 或 pod 的网络段。 |
+| `PodPlacement` | Pod 调度关系 | Pod placement relation | 表示 Pod 在某个时间段调度到哪台主机上。 |
+| `PodNetAssoc` | Pod 网络接入关系 | Pod network association | 表示 Pod 接入哪个网络段，以及对应地址和接口信息。 |
+| `HostNetAssoc` | 主机网络接入关系 | Host network association | 表示主机接入哪个网络段，以及对应地址和接口信息。 |
+<!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `HostInventory`
 
@@ -132,7 +151,6 @@ PodInventory {
 PodInventory {
   pod_id
   tenant_id
-  environment_id
   cluster_id?
   namespace
   workload_id?
@@ -145,11 +163,28 @@ PodInventory {
 }
 ```
 
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `pod_id` | 中心侧为 Pod 分配的稳定主键 | Stable internal pod ID |
+| `tenant_id` | Pod 所属租户 | Tenant ID |
+| `cluster_id` | Pod 所在集群 ID | Cluster ID |
+| `namespace` | Pod 所在命名空间名称 | Namespace name |
+| `workload_id` | Pod 归属的工作负载 ID | Workload ID |
+| `pod_uid` | Kubernetes 语义下的稳定 Pod UID | Kubernetes pod UID |
+| `pod_name` | 当前 Pod 名称 | Pod name |
+| `node_id` | 当前或最近一次已知节点 ID | Node/host ID |
+| `phase` | Pod 当前阶段 | Pod phase |
+| `first_seen_at` | 首次发现时间 | First seen time |
+| `last_seen_at` | 最近一次观测时间 | Last seen time |
+
 说明：
 
 - `pod_id` 是中心内部稳定主键
 - `pod_uid` 是外部 Kubernetes 语义下的稳定标识候选
 - `node_id` 表示当前或最近一次已知调度节点，不应承担完整调度历史
+- 应用环境归属不写入 `PodInventory` 主对象，建议通过独立关系表达
 
 ### 5.3 `NetworkDomain`
 
@@ -159,9 +194,8 @@ PodInventory {
 
 ```text
 NetworkDomain {
-  network_domain_id
+  net_domain_id
   tenant_id
-  environment_id
   kind
   name
   external_ref?
@@ -170,6 +204,19 @@ NetworkDomain {
   updated_at
 }
 ```
+
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `net_domain_id` | 网络域主键 | Network domain ID |
+| `tenant_id` | 所属租户 | Tenant ID |
+| `kind` | 网络域类型 | Domain kind |
+| `name` | 网络域名称 | Domain name |
+| `external_ref` | 外部系统引用 | External reference |
+| `metadata` | 扩展元数据 | Metadata |
+| `created_at` | 创建时间 | Created time |
+| `updated_at` | 更新时间 | Updated time |
 
 `kind` 示例：
 
@@ -186,8 +233,8 @@ NetworkDomain {
 
 ```text
 NetworkSegment {
-  network_segment_id
-  network_domain_id
+  net_seg_id
+  net_domain_id
   segment_type
   name
   cidr?
@@ -198,6 +245,20 @@ NetworkSegment {
 }
 ```
 
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `net_seg_id` | 网络段主键 | Network segment ID |
+| `net_domain_id` | 归属网络域 ID | Network domain ID |
+| `segment_type` | 网络段类型 | Segment type |
+| `name` | 网络段名称 | Segment name |
+| `cidr` | 网络段 CIDR | CIDR |
+| `gateway_ip` | 网关地址 | Gateway IP |
+| `metadata` | 扩展元数据 | Metadata |
+| `created_at` | 创建时间 | Created time |
+| `updated_at` | 更新时间 | Updated time |
+
 `segment_type` 示例：
 
 - `subnet`
@@ -205,6 +266,116 @@ NetworkSegment {
 - `pod_network`
 - `service_network`
 - `namespace_network`
+
+### 5.4.1 `NetworkDomain` 与 `NetworkSegment` 的区别
+
+两者的区别在于层级不同：
+
+- `NetworkDomain` 是较高层的网络边界
+- `NetworkSegment` 是这个边界下面的具体网络段
+
+可以理解为：
+
+```text
+NetworkDomain
+  -> NetworkSegment[]
+```
+
+例如：
+
+```text
+NetworkDomain: vpc-prod-sh
+  kind = vpc
+
+NetworkSegment: subnet-app-a
+  net_domain_id = vpc-prod-sh
+  cidr = 10.20.1.0/24
+
+NetworkSegment: subnet-db-a
+  net_domain_id = vpc-prod-sh
+  cidr = 10.20.2.0/24
+```
+
+这里：
+
+- `vpc-prod-sh` 是一个网络域
+- `subnet-app-a`、`subnet-db-a` 是这个网络域下的两个具体网段
+
+所以：
+
+- `net_domain_id` 表示“这段网属于哪个网络边界”
+- `net_seg_id` 表示“当前挂接到的是哪一段具体网络”
+
+### 5.4.2 这些 ID 怎么获得
+
+第一版建议统一由中心侧生成稳定内部 ID，外部系统只提供候选事实。
+
+#### `net_domain_id`
+
+通常来自更高层平台对象或归一结果，例如：
+
+- 云平台里的 `VPC` / `VNet`
+- Kubernetes / CNI 的 cluster network / fabric
+- CMDB 或网络资产系统中的网络域定义
+- 手工导入的网络边界配置
+
+中心侧会基于：
+
+- 外部对象 ID
+- 名称
+- 类型
+- 所属租户
+
+做 identity resolution，然后生成或命中内部 `net_domain_id`。
+
+#### `net_seg_id`
+
+通常来自具体可挂接网段信息，例如：
+
+- 云子网 `subnet`
+- overlay 网络
+- pod network
+- service network
+- 某个明确 CIDR 网段
+
+中心侧会基于：
+
+- 上层 `network_domain`
+- CIDR
+- segment 名称
+- 网关地址
+- 外部引用
+
+做归一后生成或命中内部 `net_seg_id`。
+
+### 5.4.3 为什么 host / pod 不直接连到 `NetworkDomain`
+
+因为 `host` 或 `pod` 真正接入的是具体网段，而不是抽象边界。
+
+所以关系应表达为：
+
+```text
+HostNetAssoc
+  -> NetworkSegment
+  -> NetworkDomain
+
+PodNetAssoc
+  -> NetworkSegment
+  -> NetworkDomain
+```
+
+不要直接写成：
+
+```text
+host -> network_domain
+pod -> network_domain
+```
+
+否则会丢掉：
+
+- 具体接入的是哪段 CIDR
+- 是否主网卡 / 主附件
+- 同一网络域下挂了哪几个不同 segment
 
 ### 5.5 `PodPlacement`
 
@@ -225,22 +396,148 @@ PodPlacement {
 }
 ```
 
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `placement_id` | 调度关系主键 |
+| `pod_id` | Pod 主键 |
+| `host_id` | 主机主键 |
+| `source` | 数据来源 |
+| `valid_from` | 生效开始时间 |
+| `valid_to` | 生效结束时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
 说明：
 
 - 一个 `pod` 在同一时刻应只有一个有效 placement
 - 历史迁移通过多段 `valid_from / valid_to` 保存
 
-### 5.6 `PodNetworkAttachment`
+### 5.5.1 未解析调度事实与已解析关系
+
+`PodPlacement` 也建议采用和网络归属相同的分层：
+
+- 未解析的调度事实
+- 已解析的 `PodPlacement`
+
+例如在运行观测里可能先看到：
+
+- `pod_uid?`
+- `pod_name?`
+- `host_name?`
+- `node_name?`
+- `observed_at`
+
+但这时未必已经稳定命中 `pod_id` 和 `host_id`。
+
+更合理的表达是：
+
+```text
+PodPlacementEvidence {
+  evidence_id
+  ingest_id?
+  pod_uid?
+  pod_name?
+  host_name?
+  node_name?
+  source
+  observed_at
+  metadata?
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `evidence_id` | 证据主键 |
+| `ingest_id` | 关联的接入包 ID |
+| `pod_uid` | 观测到的 Pod UID |
+| `pod_name` | 观测到的 Pod 名称 |
+| `host_name` | 观测到的主机名 |
+| `node_name` | 观测到的节点名 |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `metadata` | 其他原始事实 |
+
+然后经过：
+
+```text
+PodPlacementEvidence
+  -> pod / host identity resolution
+  -> PodPlacement
+```
+
+### 5.5.1.1 `PodPlacementCandidate`
+
+如果 pod 或 host identity resolution 不是同步完成，还可以显式保留候选层：
+
+```text
+PodPlacementCandidate {
+  candidate_id
+  evidence_id
+  candidate_pod_id?
+  candidate_host_id?
+  confidence?
+  source
+  observed_at
+  status
+  created_at
+  updated_at
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `candidate_id` | 候选主键 |
+| `evidence_id` | 来源证据 ID |
+| `candidate_pod_id` | 候选 Pod ID |
+| `candidate_host_id` | 候选主机 ID |
+| `confidence` | 候选置信度 |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `status` | 解析状态，例如 pending / matched / conflict / rejected |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+说明：
+
+- 这层是“候选关系”，不是最终事实
+- 第一版可以不长期保留
+- 如果需要异步解析、人工审查或 explain，再单独持久化
+
+### 5.5.2 `PodPlacement` 的落库前提
+
+第一版建议固定以下规则：
+
+- `PodPlacement.pod_id` 必须非空
+- `PodPlacement.host_id` 必须非空
+- 没有完整解析出 `pod_id + host_id` 时，只能进入 candidate / evidence / staging 层
+
+推荐主链路：
+
+```text
+scan / probe / runtime evidence
+  -> PodPlacementEvidence
+  -> PodPlacementCandidate
+  -> resolved pod_id + host_id
+  -> PodPlacement
+```
+
+### 5.6 `PodNetAssoc`
 
 表示 pod 连到哪个网络段。
 
 建议结构：
 
 ```text
-PodNetworkAttachment {
-  attachment_id
+PodNetAssoc {
+  assoc_id
   pod_id
-  network_segment_id
+  net_seg_id
   interface_name?
   ip_addr?
   mac_addr?
@@ -252,6 +549,23 @@ PodNetworkAttachment {
   updated_at
 }
 ```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `assoc_id` | 接入关系主键 |
+| `pod_id` | Pod 主键 |
+| `net_seg_id` | 接入的网络段 ID |
+| `interface_name` | 网络接口名 |
+| `ip_addr` | IP 地址 |
+| `mac_addr` | MAC 地址 |
+| `is_primary` | 是否主接入关系 |
+| `source` | 数据来源 |
+| `valid_from` | 生效开始时间 |
+| `valid_to` | 生效结束时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
 
 说明：
 
@@ -259,17 +573,135 @@ PodNetworkAttachment {
 - 一个 `network_segment` 可被很多 `pod` 共享
 - `source` 可标记 `k8s_api`、`cni_sync`、`runtime_hint`
 
-### 5.7 `HostNetworkAttachment`
+### 5.6.1 未解析网络事实与已解析关系
+
+`PodNetAssoc` 也建议采用和主机侧相同的分层：
+
+- 未解析的网络事实
+- 已解析的 `PodNetAssoc`
+
+例如在运行观测里可能先看到：
+
+- `ip_addr`
+- `mac_addr`
+- `interface_name?`
+- `net_seg_id?`
+- `observed_at`
+
+但这时还没有稳定命中 `pod_id`。
+
+更合理的表达是：
+
+```text
+PodNetworkEvidence {
+  evidence_id
+  ingest_id?
+  ip_addr
+  mac_addr?
+  interface_name?
+  net_seg_id?
+  source
+  observed_at
+  metadata?
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `evidence_id` | 证据主键 |
+| `ingest_id` | 关联的接入包 ID |
+| `ip_addr` | 观测到的 IP 地址 |
+| `mac_addr` | 观测到的 MAC 地址 |
+| `interface_name` | 观测到的接口名 |
+| `net_seg_id` | 命中的网络段 ID |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `metadata` | 其他原始事实 |
+
+然后经过：
+
+```text
+PodNetworkEvidence
+  -> pod identity resolution
+  -> PodNetAssoc
+```
+
+也就是说：
+
+- `PodNetworkEvidence` 表达“系统看到了什么 Pod 网络事实”
+- `PodNetAssoc` 表达“系统已经确认这条事实属于哪个 Pod”
+
+### 5.6.1.1 `PodNetAssocCandidate`
+
+如果 pod identity resolution 不是同步完成，还可以显式保留候选层：
+
+```text
+PodNetAssocCandidate {
+  candidate_id
+  evidence_id
+  candidate_pod_id?
+  candidate_pod_keys?
+  confidence?
+  source
+  observed_at
+  status
+  created_at
+  updated_at
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `candidate_id` | 候选主键 |
+| `evidence_id` | 来源证据 ID |
+| `candidate_pod_id` | 候选 Pod ID |
+| `candidate_pod_keys` | 候选 Pod 标识线索 |
+| `confidence` | 候选置信度 |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `status` | 解析状态，例如 pending / matched / conflict / rejected |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+说明：
+
+- 这层是“候选关系”，不是最终事实
+- 第一版可以不长期保留
+- 如果需要异步解析、人工审查或 explain，再单独持久化
+
+### 5.6.2 `PodNetAssoc` 的落库前提
+
+第一版建议固定以下规则：
+
+- `PodNetAssoc.pod_id` 必须非空
+- 没有 `pod_id` 时，只能进入 candidate / evidence / staging 层
+- 只有在 pod identity resolution 成功后，才能 materialize 成正式关系
+
+推荐主链路：
+
+```text
+scan / probe / runtime evidence
+  -> PodNetworkEvidence
+  -> PodNetAssocCandidate
+  -> resolved pod_id
+  -> PodNetAssoc
+```
+
+### 5.7 `HostNetAssoc`
 
 表示 host 连到哪个网络段。
 
 建议结构：
 
 ```text
-HostNetworkAttachment {
-  attachment_id
+HostNetAssoc {
+  assoc_id
   host_id
-  network_segment_id
+  net_seg_id
   interface_name?
   ip_addr?
   mac_addr?
@@ -282,10 +714,171 @@ HostNetworkAttachment {
 }
 ```
 
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `assoc_id` | 接入关系主键 |
+| `host_id` | 主机主键 |
+| `net_seg_id` | 接入的网络段 ID |
+| `interface_name` | 网卡接口名 |
+| `ip_addr` | IP 地址 |
+| `mac_addr` | MAC 地址 |
+| `is_primary` | 是否主接入关系 |
+| `source` | 数据来源 |
+| `valid_from` | 生效开始时间 |
+| `valid_to` | 生效结束时间 |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
 说明：
 
 - 它表达的是 host 自身与网络的关系
 - 不应用 `PodPlacement` 替代这个关系
+
+### 5.7.1 未解析网络事实与已解析关系
+
+这里要明确区分两层：
+
+- 未解析的网络事实
+- 已解析的 `HostNetAssoc`
+
+如果扫描只拿到了：
+
+- `ip_addr`
+- `mac_addr`
+- `net_seg_id?`
+- `observed_at`
+
+但还没有稳定命中 `host_id`，那么这时还不能直接写正式的
+`HostNetAssoc`。
+
+更合理的表达是：
+
+```text
+HostNetworkEvidence {
+  evidence_id
+  ingest_id?
+  ip_addr
+  mac_addr?
+  interface_name?
+  net_seg_id?
+  source
+  observed_at
+  metadata?
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `evidence_id` | 证据主键 |
+| `ingest_id` | 关联的接入包 ID |
+| `ip_addr` | 观测到的 IP 地址 |
+| `mac_addr` | 观测到的 MAC 地址 |
+| `interface_name` | 观测到的接口名 |
+| `net_seg_id` | 命中的网络段 ID |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `metadata` | 其他原始事实 |
+
+然后经过：
+
+```text
+HostNetworkEvidence
+  -> host identity resolution
+  -> HostNetAssoc
+```
+
+也就是说：
+
+- `HostNetworkEvidence` 表达“系统看到了什么网络事实”
+- `HostNetAssoc` 表达“系统已经确认这条事实属于哪台主机”
+
+### 5.7.1.1 `HostNetAssocCandidate`
+
+如果 identity resolution 不是同步完成，还可以显式保留候选层：
+
+```text
+HostNetAssocCandidate {
+  candidate_id
+  evidence_id
+  candidate_host_id?
+  candidate_host_keys?
+  confidence?
+  source
+  observed_at
+  status
+  created_at
+  updated_at
+}
+```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `candidate_id` | 候选主键 |
+| `evidence_id` | 来源证据 ID |
+| `candidate_host_id` | 候选主机 ID |
+| `candidate_host_keys` | 候选主机标识线索 |
+| `confidence` | 候选置信度 |
+| `source` | 数据来源 |
+| `observed_at` | 观测时间 |
+| `status` | 解析状态，例如 pending / matched / conflict / rejected |
+| `created_at` | 创建时间 |
+| `updated_at` | 更新时间 |
+
+说明：
+
+- 这层是“候选关系”，不是最终事实
+- 第一版可以不长期保留
+- 如果需要异步解析、人工审查或 explain，再单独持久化
+
+### 5.7.2 `HostNetAssoc` 的落库前提
+
+第一版建议固定以下规则：
+
+- `HostNetAssoc.host_id` 必须非空
+- 没有 `host_id` 时，只能进入 candidate / evidence / staging 层
+- 只有在 host identity resolution 成功后，才能 materialize 成正式关系
+
+推荐主链路：
+
+```text
+scan / probe / runtime evidence
+  -> HostNetworkEvidence
+  -> HostNetAssocCandidate
+  -> resolved host_id
+  -> HostNetAssoc
+```
+
+这样可以避免：
+
+- 扫描阶段就写入错误主机
+- 后续再做困难的 `host_id` 回填修补
+- 多来源 IP 事实污染正式关系表
+
+### 5.7.3 三层如何落地
+
+第一版建议这样理解：
+
+- `staging` 层：复用通用 `IngestEnvelope`
+- `evidence` 层：建议独立建 `HostNetworkEvidence`
+- `candidate` 层：可选持久化，必要时建 `HostNetAssocCandidate`
+- `resolved relation` 层：正式落 `HostNetAssoc`
+
+这里第一版不建议再单独造一个新的 `NetworkFactEnvelope`，避免和通用 ingest 模型重复。
+
+也就是：
+
+```text
+IngestEnvelope
+  -> HostNetworkEvidence
+  -> HostNetAssocCandidate   // optional persisted layer
+  -> HostNetAssoc
+```
 
 ---
 
@@ -295,17 +888,17 @@ HostNetworkAttachment {
 
 ```text
 HostInventory
-  -> HostNetworkAttachment[]
+  -> HostNetAssoc[]
   -> PodPlacement[]
 
 PodInventory
   -> PodPlacement[]
-  -> PodNetworkAttachment[]
+  -> PodNetAssoc[]
 
-PodNetworkAttachment
+PodNetAssoc
   -> NetworkSegment
 
-HostNetworkAttachment
+HostNetAssoc
   -> NetworkSegment
 
 NetworkSegment
@@ -351,7 +944,7 @@ K8sCluster
 
 它对应：
 
-- `PodNetworkAttachment`
+- `PodNetAssoc`
 
 因此：
 
@@ -447,11 +1040,54 @@ PodInventory
 - 需要事务、一致性和 join 查询
 - 与现有 `host inventory`、责任关系、软件图谱天然同库更简单
 
+建议至少区分三类表：
+
+- 目录对象表
+- 证据 / 候选表
+- 最终关系表
+
+第一版建议主表包括：
+
+- `pod_inventory`
+- `network_domain`
+- `network_segment`
+- `pod_placement`
+- `pod_net_assoc`
+- `host_net_assoc`
+
+若需要保留未解析网络事实，再增加：
+
+- `pod_placement_evidence`
+- `pod_network_evidence`
+- `host_network_evidence`
+
+若需要异步解析、人工审查或 explain，再增加候选层：
+
+- `pod_placement_candidate`
+- `pod_net_assoc_candidate`
+- `host_net_assoc_candidate`
+
+建议索引重点：
+
+- `pod_placement(pod_id, valid_to)`
+- `pod_placement(host_id, valid_to)`
+- `pod_placement_evidence(pod_uid)`
+- `pod_placement_evidence(host_name)`
+- `pod_placement_candidate(status, observed_at)`
+- `pod_net_assoc(pod_id, valid_to)`
+- `pod_net_assoc(net_seg_id, valid_to)`
+- `host_net_assoc(host_id, valid_to)`
+- `host_net_assoc(net_seg_id, valid_to)`
+- `pod_network_evidence(ip_addr)`
+- `host_network_evidence(ip_addr)`
+- `pod_net_assoc_candidate(status, observed_at)`
+- `host_net_assoc_candidate(status, observed_at)`
+
 不建议第一版直接采用：
 
 - 图数据库作为主存储
 - 仅文档库存完整拓扑
-- 把 attachment 关系塞进 JSON 字段
+- 把网络接入关系塞进 JSON 字段
 
 ---
 
@@ -462,23 +1098,40 @@ PodInventory
 - 先支持 `PodInventory`
 - 先支持 `NetworkDomain` 与 `NetworkSegment`
 - 先支持 `PodPlacement`
-- 先支持 `PodNetworkAttachment`
-- `HostNetworkAttachment` 可与主机网络 inventory 一起推进
+- 先支持 `PodNetAssoc`
+- `HostNetAssoc` 可与主机网络 inventory 一起推进
+
+如果网络事实来源较杂，第一版还建议：
+
+- 先支持 `PodPlacementEvidence`
+- 先支持 `PodNetworkEvidence`
+- 先支持 `HostNetworkEvidence`
+
+候选层则作为可选：
+
+- `PodPlacementCandidate`
+- `PodNetAssocCandidate`
+- `HostNetAssocCandidate`
 
 第一版不要一开始就做得过重：
 
 - 不必先做全量 service mesh 拓扑
 - 不必先做细粒度 east-west 实时流图
 - 不必先做复杂网络策略推演
+- 不必一开始就长期保留所有 candidate 数据
 
 先把：
 
 - pod 是谁
 - pod 在哪台 host 上
+- unresolved 调度事实如何进入 evidence 层
+- resolved 调度关系如何进入 placement 层
 - pod 连到哪个网络段
 - 哪些 pod 共享同一网络段
+- unresolved 网络事实如何进入 evidence 层
+- resolved 网络关系如何进入 assoc 层
 
-四件事固定住。
+八件事固定住。
 
 ---
 

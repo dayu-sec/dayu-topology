@@ -89,6 +89,19 @@ PodInventory {
 
 ## 5. 对象模型
 
+### 5.0 核心术语中英对照
+
+<!-- GLOSSARY_SYNC:START terms=ClusterInventory,NamespaceInventory,WorkloadEntity,PodInventory,WorkloadPodMembership,ServiceWorkloadBinding -->
+| 术语 | 中文名 | English | 中文说明 |
+| --- | --- | --- | --- |
+| `ClusterInventory` | 集群目录对象 | Cluster inventory object | 表示集群级目录对象，是运行环境边界。 |
+| `NamespaceInventory` | 命名空间目录对象 | Namespace inventory object | 表示集群内命名空间边界，是隔离和治理边界。 |
+| `WorkloadEntity` | 工作负载对象 | Workload entity object | 表示部署工作负载对象，是 `service` 与 `pod` 之间的桥接层。 |
+| `PodInventory` | Pod 目录对象 | Pod inventory object | 表示稳定的 Pod 目录对象，是实际运行副本，不是服务定义。 |
+| `WorkloadPodMembership` | 工作负载成员关系 | Workload pod membership relation | 表示某个 Pod 属于哪个 Workload，并保留时间段语义。 |
+| `ServiceWorkloadBinding` | 服务与工作负载绑定 | Service workload binding relation | 表示逻辑服务与部署工作负载之间的绑定关系。 |
+<!-- GLOSSARY_SYNC:END -->
+
 ### 5.1 `ClusterInventory`
 
 表示集群级目录对象。
@@ -99,7 +112,6 @@ PodInventory {
 ClusterInventory {
   cluster_id
   tenant_id
-  environment_id
   name
   cluster_type
   region?
@@ -110,6 +122,20 @@ ClusterInventory {
 }
 ```
 
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `cluster_id` | 集群主键 | Cluster ID |
+| `tenant_id` | 所属租户 | Tenant ID |
+| `name` | 集群名称 | Cluster name |
+| `cluster_type` | 集群类型 | Cluster type |
+| `region` | 区域 | Region |
+| `provider` | 提供方 | Provider |
+| `external_ref` | 外部系统引用 | External reference |
+| `created_at` | 创建时间 | Created time |
+| `updated_at` | 更新时间 | Updated time |
+
 `cluster_type` 示例：
 
 - `kubernetes`
@@ -117,6 +143,7 @@ ClusterInventory {
 - `mesos`
 
 第一版以 `kubernetes` 为主，但对象命名可保留泛化空间。
+如果 `environment_id` 表示应用环境，不建议写入 `ClusterInventory` 主对象。
 
 ### 5.2 `NamespaceInventory`
 
@@ -131,11 +158,24 @@ NamespaceInventory {
   tenant_id
   name
   purpose?
-  lifecycle_state?
+  state?
   created_at
   updated_at
 }
 ```
+
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `namespace_id` | 命名空间主键 | Namespace ID |
+| `cluster_id` | 所属集群 ID | Cluster ID |
+| `tenant_id` | 所属租户 | Tenant ID |
+| `name` | 命名空间名称 | Namespace name |
+| `purpose` | 命名空间用途 | Purpose |
+| `state` | 生命周期状态 | State |
+| `created_at` | 创建时间 | Created time |
+| `updated_at` | 更新时间 | Updated time |
 
 说明：
 
@@ -158,11 +198,27 @@ WorkloadEntity {
   workload_kind
   name
   desired_replicas?
-  lifecycle_state?
+  state?
   created_at
   updated_at
 }
 ```
+
+字段中英说明：
+
+| 字段 | 中文说明 | English |
+| --- | --- | --- |
+| `workload_id` | 工作负载主键 | Workload ID |
+| `cluster_id` | 所属集群 ID | Cluster ID |
+| `namespace_id` | 所属命名空间 ID | Namespace ID |
+| `tenant_id` | 所属租户 | Tenant ID |
+| `service_id` | 归属服务 ID | Service ID |
+| `workload_kind` | 工作负载类型 | Workload kind |
+| `name` | 工作负载名称 | Workload name |
+| `desired_replicas` | 期望副本数 | Desired replicas |
+| `state` | 生命周期状态 | State |
+| `created_at` | 创建时间 | Created time |
+| `updated_at` | 更新时间 | Updated time |
 
 `workload_kind` 示例：
 
@@ -211,6 +267,34 @@ WorkloadPodMembership {
 - 一般一个 pod 同时只属于一个 workload
 - 采用独立关系表是为了保留时间段和来源审计
 
+### 5.5.1 `ResourceScopeMembership`
+
+表示某个资源当前属于哪个应用环境或资源集合。
+
+建议结构：
+
+```text
+ResourceScopeMembership {
+  membership_id
+  tenant_id
+  target_type
+  target_id
+  scope_type
+  scope_id
+  source
+  valid_from
+  valid_to?
+  created_at
+  updated_at
+}
+```
+
+说明：
+
+- `target_type` 可取 `host`、`pod`、`workload`、`namespace`、`cluster`
+- `scope_type` 可取 `app_environment`、`resource_set`
+- 这层表达“资源当前实际归属到哪里”
+
 ### 5.6 `ServiceWorkloadBinding`
 
 表示逻辑服务与 workload 的绑定关系。
@@ -243,6 +327,31 @@ ServiceWorkloadBinding {
 - 这层关系把业务服务定义和部署工作负载连接起来
 - 比直接 `service -> pod` 更稳定，也更适合治理
 
+### 5.6.1 `ServiceResourceSetBinding`
+
+表示某个业务服务需要哪些资源集合。
+
+建议结构：
+
+```text
+ServiceResourceSetBinding {
+  binding_id
+  service_id
+  resource_set_id
+  binding_role?
+  source
+  valid_from
+  valid_to?
+  created_at
+  updated_at
+}
+```
+
+说明：
+
+- 这层表达“业务需要什么资源”
+- 它不等于“某个资源当前实际归属到哪里”
+
 ---
 
 ## 6. 关系图谱
@@ -271,7 +380,7 @@ WorkloadPodMembership
 
 PodInventory
   -> PodPlacement[]
-  -> PodNetworkAttachment[]
+  -> PodNetAssoc[]
   -> HostInventory
 ```
 
@@ -310,7 +419,7 @@ BusinessDomain
 
 - `PodInventory` 继续作为运行对象
 - `PodPlacement` 继续表达 pod 与 host 的调度关系
-- `PodNetworkAttachment` 继续表达 pod 与 network 的接入关系
+- `PodNetAssoc` 继续表达 pod 与 network 的接入关系
 
 本模型只补：
 

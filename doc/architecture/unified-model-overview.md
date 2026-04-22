@@ -76,8 +76,8 @@
 - `HostRuntimeState`
 - `ProcessRuntimeState`
 - `ServiceInstance`
-- `ServiceEndpoint`
-- `ServiceInstanceEndpoint`
+- `SvcEp`
+- `InstEp`
 
 回答：
 
@@ -90,9 +90,9 @@
 对象包括：
 
 - `PodPlacement`
-- `PodNetworkAttachment`
-- `HostNetworkAttachment`
-- `ServiceDependency`
+- `PodNetAssoc`
+- `HostNetAssoc`
+- `DepEdge`
 - `SoftwareEvidence`
 
 回答：
@@ -137,28 +137,28 @@ SystemBoundary
   -> ServiceEntity[]
 
 ServiceEntity
-  -> ServiceDependency[]
-  -> ServiceEndpoint[]
+  -> DepEdge[]
+  -> SvcEp[]
   -> ServiceInstance[]
 
 ServiceInstance
-  -> ServiceInstanceEndpoint[]
+  -> InstEp[]
   -> PodInventory / ProcessRuntimeState
   -> HostInventory
 
 HostInventory
   -> HostRuntimeState[]
-  -> HostNetworkAttachment[]
+  -> HostNetAssoc[]
   -> ResponsibilityAssignment[]
 
 PodInventory
   -> PodPlacement[]
-  -> PodNetworkAttachment[]
+  -> PodNetAssoc[]
 
-PodNetworkAttachment
+PodNetAssoc
   -> NetworkSegment
 
-HostNetworkAttachment
+HostNetAssoc
   -> NetworkSegment
 
 SoftwareEvidence
@@ -285,8 +285,8 @@ host-inventory-and-runtime-state
 
 ### 6.2 逻辑关系与网络关系分开
 
-- `ServiceDependency` 表达逻辑依赖
-- `PodNetworkAttachment` / `HostNetworkAttachment` 表达拓扑接入
+- `DepEdge` 表达逻辑依赖
+- `PodNetAssoc` / `HostNetAssoc` 表达拓扑接入
 
 ### 6.3 责任关系独立建模
 

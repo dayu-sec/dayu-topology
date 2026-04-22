@@ -106,8 +106,8 @@
 
 - `runtime_binding`
 - `responsibility_assignment`
-- `service_dependency`
-- `pod_network_attachment`
+- `dep_edge`
+- `pod_net_assoc`
 
 ### 4.3 运行态快照优先进入 PostgreSQL
 

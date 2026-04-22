@@ -115,33 +115,36 @@
 HostInventory {
   host_id
   tenant_id
-  environment_id
   host_name
   machine_id?
-  serial_number?
-  cloud_instance_id?
-  vendor?
-  model?
-  arch
-  os_name
+  os_name?
   os_version?
-  kernel_version?
-  cpu_model?
-  cpu_core_count?
-  memory_total_bytes?
-  disk_inventory?
-  network_interface_inventory?
-  first_seen_at
+  created_at
   last_inventory_at
-  inventory_revision
 }
 ```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `host_id` | 中心侧为主机分配的稳定主键，用来关联其他对象 |
+| `tenant_id` | 主机所属租户 |
+| `host_name` | 当前主机名 |
+| `machine_id` | 操作系统层面的稳定机器标识 |
+| `os_name` | 操作系统名称 |
+| `os_version` | 操作系统版本 |
+| `created_at` | 这台主机在中心目录中创建的时间 |
+| `last_inventory_at` | 最近一次完成 inventory 刷新的时间 |
 
 关键约束：
 
 - `host_id` 是中心内部主键
 - `host_name` 不是唯一主键
 - `last_inventory_at` 表示最近一次 inventory 刷新完成时间
+- 第一版只保留容易稳定获取的最小主机目录字段
+- 难稳定获取的硬件细节、磁盘/NIC 明细先不进入 `HostInventory`
+- 应用环境归属不写入 `HostInventory`，应通过独立关系表达
 
 ### 5.2 `HostRuntimeState`
 
@@ -153,7 +156,6 @@ HostRuntimeState {
   observed_at
   boot_id?
   uptime_seconds?
-  current_ip_set?
   loadavg_1m?
   loadavg_5m?
   loadavg_15m?
@@ -168,15 +170,42 @@ HostRuntimeState {
   container_count?
   agent_health
   protection_state?
+  degraded_reason?
   last_error?
 }
 ```
+
+字段中文说明：
+
+| 字段 | 中文说明 |
+| --- | --- |
+| `host_id` | 关联的主机主键，用来指向对应的 `HostInventory` |
+| `observed_at` | 本次运行态快照的观测时间 |
+| `boot_id` | 当前启动周期标识，用于区分主机重启前后的快照 |
+| `uptime_seconds` | 主机已运行时长，单位为秒 |
+| `loadavg_1m` | 最近 1 分钟平均负载 |
+| `loadavg_5m` | 最近 5 分钟平均负载 |
+| `loadavg_15m` | 最近 15 分钟平均负载 |
+| `cpu_usage_pct` | 当前 CPU 使用率 |
+| `memory_used_bytes` | 当前已使用内存，单位为字节 |
+| `memory_available_bytes` | 当前可用内存，单位为字节 |
+| `disk_used_bytes` | 当前已使用磁盘容量，单位为字节 |
+| `disk_available_bytes` | 当前可用磁盘容量，单位为字节 |
+| `network_rx_bytes` | 网络接收累计字节数 |
+| `network_tx_bytes` | 网络发送累计字节数 |
+| `process_count` | 当前进程数量 |
+| `container_count` | 当前容器数量 |
+| `agent_health` | agent 当前健康状态 |
+| `protection_state` | 当前是否处于保护态或退化态 |
+| `degraded_reason` | 当前退化原因摘要 |
+| `last_error` | 最近一次错误摘要 |
 
 关键约束：
 
 - `HostRuntimeState` 是时间点快照，不是目录对象
 - 应允许频繁刷新
 - 可做保留窗口、降采样和 TTL 清理
+- 当前 IP 不作为 `HostRuntimeState` 主字段，统一由 `HostNetAssoc` 表达
 
 ### 5.3 `HostRuntimeAggregate`
 
@@ -195,6 +224,25 @@ HostRuntimeAggregate {
 ```
 
 这层是派生层，不是 source of truth。
+
+---
+
+### 5.4 命名与边界 review 结论
+
+为避免字段持续漂移，第一版固定以下规则：
+
+- 主对象字段优先表达稳定事实，不内嵌大块明细结构
+- 大对象明细优先使用 `*_blob_ref`
+- 运行指标保留明确单位后缀，例如 `*_bytes`、`*_pct`、`*_seconds`
+- 网络接入关系不写入 `HostRuntimeState`，统一走关系模型
+
+本轮 review 后收敛如下：
+
+- 精简 `HostInventory`，只保留最小可稳定获取字段
+- 删除 `current_ip_set`
+- 补充 `degraded_reason`
+
+这不是单纯缩短字段名，而是先统一命名规则和对象边界。
 
 ---
 

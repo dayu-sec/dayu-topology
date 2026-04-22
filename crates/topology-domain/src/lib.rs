@@ -14,7 +14,6 @@ pub struct BusinessDomain {
 pub struct HostInventory {
     pub host_id: Uuid,
     pub tenant_id: Uuid,
-    pub environment_id: Uuid,
     pub host_name: String,
     pub created_at: DateTime<Utc>,
 }

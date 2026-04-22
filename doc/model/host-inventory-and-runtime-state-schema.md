@@ -41,25 +41,12 @@ HostInventory {
   kind
   host_id
   tenant_id
-  environment_id
   host_name
   machine_id?
-  serial_number?
-  cloud_instance_id?
-  vendor?
-  model?
-  arch
-  os_name
+  os_name?
   os_version?
-  kernel_version?
-  cpu_model?
-  cpu_core_count?
-  memory_total_bytes?
-  disks[]?
-  network_interfaces[]?
-  first_seen_at
+  created_at
   last_inventory_at
-  inventory_revision
 }
 ```
 
@@ -74,49 +61,60 @@ HostInventory {
 - `kind`
 - `host_id`
 - `tenant_id`
-- `environment_id`
 - `host_name`
-- `arch`
-- `os_name`
-- `first_seen_at`
+- `created_at`
 - `last_inventory_at`
-- `inventory_revision`
 
 ### 3.3 字段要求
 
 - `host_id`
   - 中心内部稳定主键
   - 不允许为空
-- `inventory_revision`
-  - 单主机单调递增
 - `last_inventory_at`
-  - 应不早于 `first_seen_at`
+  - 应不早于 `created_at`
 
-### 3.4 `disks[]`
+### 3.4 第一版精简原则
 
-建议结构：
+`HostInventory` 第一版只保留“容易稳定获取”的最小字段集：
 
-```text
-DiskInventoryItem {
-  disk_id
-  kind?
-  capacity_bytes?
-  mount_points[]?
-}
-```
+- 身份字段：`host_id`、`tenant_id`、`host_name`
+- 身份字段：`host_id`、`tenant_id`、`host_name`
+- 辅助身份字段：`machine_id`
+- 最小展示字段：`os_name`、`os_version`
+- 目录时间字段：`created_at`、`last_inventory_at`
 
-### 3.5 `network_interfaces[]`
+第一版先不保留以下字段：
 
-建议结构：
+- `serial_number`
+- `cloud_instance_id`
+- `vendor`
+- `model`
+- `arch`
+- `kernel_version`
+- `cpu_model`
+- `cpu_core_count`
+- `memory_total_bytes`
+- `disk_blob_ref`
+- `nic_blob_ref`
+- `inventory_revision`
 
-```text
-NetworkInterfaceInventoryItem {
-  interface_id
-  name
-  mac_address?
-  addresses[]?
-}
-```
+### 3.5 字段说明
+
+| 字段 | 含义 | 来源/口径 | 必填 | 备注 |
+| --- | --- | --- | --- | --- |
+| `host_id` | 中心侧稳定主机主键 | identity resolution 产物 | 是 | 不等于 `host_name` |
+| `tenant_id` | 所属租户 | ingest / sync envelope | 是 | 所有主对象必须带租户边界 |
+| `host_name` | 当前主机名 | 边缘发现或平台元数据 | 是 | 可变，不能作为唯一键 |
+| `machine_id` | OS 级稳定机器标识 | agent / OS facts | 否 | 高置信 identity 线索 |
+| `os_name` | 操作系统名称 | inventory facts | 否 | 例如 `linux`、`windows` |
+| `os_version` | OS 版本 | inventory facts | 否 | 慢变化 |
+| `created_at` | 中心目录对象创建时间 | 中心侧入库时间 | 是 | 与 domain 模型对齐 |
+| `last_inventory_at` | 最近一次 inventory 刷新完成时间 | inventory pipeline | 是 | 应不早于 `created_at` |
+
+说明：
+
+- `environment_id` 若表示应用环境，不应作为稳定目录字段进入 `HostInventory`
+- 应用环境归属建议改由独立关系模型维护
 
 ---
 
@@ -132,7 +130,6 @@ HostRuntimeState {
   observed_at
   boot_id?
   uptime_seconds?
-  current_ip_set[]?
   loadavg_1m?
   loadavg_5m?
   loadavg_15m?
@@ -180,12 +177,51 @@ HostRuntimeState {
 - `degraded`
 - `protect`
 
-### 4.4 时间语义
+### 4.4 字段说明
+
+| 字段 | 含义 | 来源/口径 | 必填 | 备注 |
+| --- | --- | --- | --- | --- |
+| `host_id` | 关联主机主键 | 由 inventory/resolution 提供 | 是 | 指向 `HostInventory` |
+| `observed_at` | 本次快照观测时间 | agent 上报或采样时间 | 是 | 快照时间语义 |
+| `boot_id` | 本次启动周期标识 | OS runtime facts | 否 | 用于区分重启前后快照 |
+| `uptime_seconds` | 主机已运行秒数 | OS runtime facts | 否 | 单位为 seconds |
+| `loadavg_1m` | 1 分钟平均负载 | OS runtime facts | 否 | 浮点值 |
+| `loadavg_5m` | 5 分钟平均负载 | OS runtime facts | 否 | 浮点值 |
+| `loadavg_15m` | 15 分钟平均负载 | OS runtime facts | 否 | 浮点值 |
+| `cpu_usage_pct` | 当前 CPU 使用率 | agent 采样值 | 否 | 百分比，`0-100` 或多核归一后口径需固定 |
+| `memory_used_bytes` | 当前已用内存 | agent 采样值 | 否 | 单位为 bytes |
+| `memory_available_bytes` | 当前可用内存 | agent 采样值 | 否 | 单位为 bytes |
+| `disk_used_bytes` | 当前已用磁盘容量 | agent 采样聚合值 | 否 | 单位为 bytes；聚合口径需固定 |
+| `disk_available_bytes` | 当前可用磁盘容量 | agent 采样聚合值 | 否 | 单位为 bytes；聚合口径需固定 |
+| `network_rx_bytes` | 网络接收累计字节数 | OS/agent runtime counter | 否 | 建议固定为累计计数，不用增量语义 |
+| `network_tx_bytes` | 网络发送累计字节数 | OS/agent runtime counter | 否 | 建议固定为累计计数，不用增量语义 |
+| `process_count` | 当前进程数 | agent 采样值 | 否 | 整数 |
+| `container_count` | 当前容器数 | agent 采样值 | 否 | 整数 |
+| `agent_health` | agent 当前健康状态 | agent 自身状态机 | 是 | 枚举值 |
+| `protection_state` | 当前保护/退化状态 | agent 或控制逻辑 | 否 | 枚举值 |
+| `degraded_reason` | 当前退化原因摘要 | agent 或规则输出 | 否 | 建议短文本摘要，不保存大段日志 |
+| `last_error` | 最近错误摘要 | agent 或 pipeline 输出 | 否 | 建议短文本；详细内容走日志或 blob |
+
+### 4.5 时间语义
 
 - `HostRuntimeState` 允许同一 `host_id` 存多条记录
 - 主键不应只靠 `host_id`
 - 建议唯一键：
   - `host_id + observed_at`
+
+### 4.6 命名与边界 review 结论
+
+第一版固定以下边界：
+
+- 不保留 `current_ip_set`，主机当前地址统一通过 `host_net_assoc` 表达
+- 不在 `HostRuntimeState` 内重复承载网络关系对象
+- 自由文本字段仅保留摘要，详细错误内容进入结构化日志或 blob
+
+字段命名规则：
+
+- 指标字段保留单位后缀，例如 `*_bytes`、`*_pct`、`*_seconds`
+- 状态字段使用领域词，不使用实现细节词
+- 大型明细结构不用 `[]` 内嵌到主对象，优先 `*_blob_ref`
 
 ---
 
