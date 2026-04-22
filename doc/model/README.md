@@ -4,6 +4,16 @@
 
 - [unified-topology-schema.md](./unified-topology-schema.md)
 
+## 数据驱动入口
+
+整体模型按“输入数据 -> evidence / candidate / observation -> identity resolution -> source-of-truth 模型 -> 派生视图”的流程建立。
+
+建议先阅读：
+
+- [../architecture/dataflow-and-pipeline-architecture.md](../architecture/dataflow-and-pipeline-architecture.md)
+
+再按下面模型文档查看各类输入如何落到具体对象。
+
 - [software-normalization-and-vuln-enrichment.md](./software-normalization-and-vuln-enrichment.md)
 - [public-vulnerability-source-ingestion.md](./public-vulnerability-source-ingestion.md)
 - [host-inventory-and-runtime-state.md](./host-inventory-and-runtime-state.md)
