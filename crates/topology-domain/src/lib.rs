@@ -1,36 +1,15 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+pub mod catalog;
+pub mod common;
+pub mod governance;
+pub mod ingest;
+pub mod read_model;
+pub mod runtime;
+pub mod sync;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BusinessDomain {
-    pub business_id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HostInventory {
-    pub host_id: Uuid,
-    pub tenant_id: Uuid,
-    pub host_name: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ServiceEntity {
-    pub service_id: Uuid,
-    pub tenant_id: Uuid,
-    pub name: String,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResponsibilityAssignment {
-    pub assignment_id: Uuid,
-    pub subject_id: Uuid,
-    pub target_id: Uuid,
-    pub role: String,
-    pub valid_from: DateTime<Utc>,
-}
+pub use catalog::*;
+pub use common::*;
+pub use governance::*;
+pub use ingest::*;
+pub use read_model::*;
+pub use runtime::*;
+pub use sync::*;

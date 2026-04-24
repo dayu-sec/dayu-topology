@@ -350,8 +350,12 @@ dependencies = [
 name = "topology-api"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
+ "serde_json",
+ "thiserror",
  "topology-domain",
+ "uuid",
 ]
 
 [[package]]
@@ -370,6 +374,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "uuid",
 ]
 
@@ -379,6 +384,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "topology-domain",
+ "uuid",
 ]
 
 [[package]]

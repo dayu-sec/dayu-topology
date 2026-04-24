@@ -8,3 +8,4 @@ authors.workspace = true
 [dependencies]
 thiserror.workspace = true
 topology-domain = { path = "../topology-domain" }
+uuid.workspace = true
