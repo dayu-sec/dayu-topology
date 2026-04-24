@@ -180,34 +180,79 @@
 
 ### 6.1 Edge Discovery 来源
 
+这一节应先回答“什么是 Edge Discovery 输入”，再回答“系统如何承载它”。
+
+在分析层和设计层，`Edge Discovery` 指边缘侧围绕“本机或邻接运行对象”形成的结构化发现结果。它回答的是：
+
+- 当前发现到了哪些资源对象
+- 当前发现到了哪些可绑定或可观测目标
+- 这些对象有哪些最小身份字段、来源字段和关联线索
+
+它不先绑定到某个具体实现，也不应先假定一定来自某个仓库或某条协议。
+
 来源角色：
 
 - Edge Discovery Producer
 
-典型数据：
+设计层固定语义：
 
-- host discovery
-- process facts
-- container runtime facts
-- pod facts
-- file / script facts
-- software evidence
-- runtime snapshots
+- 输入应是结构化 discovery facts，而不是任意脚本输出
+- 输入应表达资源发现结果，不应混入 runtime metrics、planner 结果或原始 telemetry
+- 输入应优先提供 identity、source、observed_at、resource relation 这类稳定字段
+- 若只能提供弱线索，应进入 candidate / evidence 层，而不是直接写正式对象
 
-| 数据 | 中间层 | 构建模型 | 计算过程 | 推荐工具 / 算法 |
+接入方式应分成两类：
+
+- 快照导入
+  中心接收边缘 discovery 快照对象
+- 受控调用
+  中心或上层编排在授权和白名单约束下调用边缘 discovery 能力，读取最新 discovery 结果或补充证据
+
+边界要求：
+
+- 若采用快照导入，中心接收的是边缘已形成的结构化 discovery 快照，而不是本地缓存文件本身
+- 若采用调用方式，返回内容语义仍应等价于 discovery snapshot 或其只读投影，而不是任意 shell 输出
+- 不允许绕过 discovery capability 边界，直接把边缘临时命令输出当成 topology 正式输入
+
+第一版纳入范围应明确限制为当前 `warp-insight discovery` 已稳定覆盖，且适合进入 topology 的 discovery 对象：
+
+- `host` resource / target
+- `process` resource / target
+- `container` resource / target
+- `file` resource / `log_file` target
+
+第一版明确不纳入本来源范围的内容：
+
+- `metrics_runtime_snapshot`、`metrics_samples` 这类 runtime state / telemetry 结果
+- `state/planner/*_candidates.json` 这类 planning 产物
+- 需要独立 K8s / Runtime API 声明源才能稳定建模的 `cluster / namespace / workload / service endpoint`
+- 独立的软件包清单、漏洞结果、安全事件、错误日志
+
+特别说明：
+
+- `process`、`container` discovery 只表达“发现到了哪些运行对象及其最小身份事实”，不等于完整 runtime metrics。
+- discovery 中若出现 `k8s.namespace.name`、`k8s.pod.uid` 等字段，第一版只作为 `RuntimeBinding` 或 `PodPlacement` 的辅助 evidence，不直接替代 K8s authoritative inventory。
+- 当前 `file` / `log_file` discovery 主要服务日志采集入口识别，不应默认等同于 `script` / `software artifact` 发现。
+- 若通过只读调用补充结果，也应优先复用统一结构化返回，不应引入新的非结构化临时格式。
+
+| discovery 内容 | 中间层 | 构建模型 | 计算过程 | 推荐工具 / 算法 |
 | --- | --- | --- | --- | --- |
-| host discovery | `HostCandidate`、`HostEvidence` | `HostInventory` | 解析 `machine_id / hostname / cloud_instance_id`，做 tenant/environment 归属，合并重复主机 | deterministic key matching、source priority、冲突队列 |
-| process facts | `ProcessRuntimeCandidate`、`RuntimeBindingCandidate`、`SoftwareEvidence` | `ProcessRuntimeState`、`RuntimeBinding`、`SoftwareEvidence` | 计算启动指纹，关联 host/container，抽取 executable/script evidence，推断 service instance | process start fingerprint、time-window join、rule-based binding、confidence scoring |
-| container runtime facts | `ContainerRuntimeCandidate` | `ContainerRuntime`、`RuntimeBinding` | 解析 container id、image、pod、host、namespace/cgroup，绑定到 pod 或 host | cgroup/namespace parsing、container id normalization、join by pod uid |
-| pod facts | `PodCandidate`、`PodPlacementEvidence` | `PodInventory`、`PodPlacement` | 解析 cluster/namespace/pod_uid/node，维护 pod 生命周期和 placement 时间段 | deterministic key `(cluster_id,pod_uid)`、valid_from/valid_to interval |
-| file / script facts | `SoftwareEvidence` | `SoftwareArtifact(artifact_kind=script)`、`ArtifactVerification` | 计算文件或脚本 `sha256`，记录解释器、shebang、权限、路径和来源 | content hash、interpreter normalization、shebang parser |
-| host / process runtime snapshot | `HostRuntimeSnapshot`、`ProcessRuntimeCandidate` | `HostRuntimeState`、`ProcessRuntimeState` | 时间戳归一、单位归一、异常值过滤、按 `observed_at` 写入 | schema validation、unit normalization、MAD / percentile outlier filter |
+| `host` resource / target | `HostCandidate`、`HostEvidence` | `HostInventory` | 解析 `host.id / host.name` 及来源信息，做 tenant/environment 归属，合并重复主机 | deterministic key matching、source priority、冲突队列 |
+| `process` resource / target | `ProcessRuntimeCandidate`、`RuntimeBindingCandidate` | `ProcessRuntimeState`、`RuntimeBinding` | 使用 `host.id + process.pid + process.identity` 等字段建立进程存在性与绑定候选，关联 host/container | process identity matching、time-window join、rule-based binding、confidence scoring |
+| `container` resource / target | `ContainerRuntimeCandidate`、`RuntimeBindingEvidence` | `ContainerRuntime`、`RuntimeBinding` | 解析 `container.id`、runtime、namespace、`pid`、`cgroup.path` 以及可选 `k8s.*` 线索，绑定到 host 或 pod 候选 | container id normalization、cgroup/namespace parsing、evidence scoring |
+| `file` resource / `log_file` target | `FileDiscoveryEvidence` | 第一版默认不直接写入 topology 核心对象 | 保留路径、inode、host/container 关联和来源，供后续日志入口治理或软件证据扩展使用 | path normalization、inode/device correlation、source tagging |
 
 输出特点：
 
-- Edge 数据是运行事实和证据，不直接等于中心最终关系。
-- Edge 最有价值的是稳定标识和证据字段，例如 `machine_id`、`pod_uid`、`container_id`、`process start time`、`sha256`。
+- 无论采用哪种方式，进入 `dayu-topology` 的都应是结构化 discovery 事实，而不是 runtime metrics、planner 结果或原始 telemetry。
+- 对 `dayu-topology` 最有价值的是稳定 identity 和来源证据字段，例如 `host.id`、`process.identity`、`container.id`、`k8s.pod.uid`、`origin_id`。
 - 只要无法解析中心主键，就停留在 candidate / evidence，不写正式关系。
+
+实现映射：
+
+- 在当前方案讨论里，`warp-insight` 可以作为 `Edge Discovery Producer` 的一个实现承载。
+- 若采用该实现，则快照导入可映射到 `ReportDiscoverySnapshot` / `DiscoverySnapshotContract`，受控调用可映射到其只读 discovery 导出或受控 opcode 返回。
+- 但这属于实现层选择，不改变本节前述分析层和设计层定义。
 
 ### 6.2 Kubernetes / Runtime API 来源
 
