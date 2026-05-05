@@ -10,6 +10,7 @@
 
 建议先阅读：
 
+- [../external-integration/input-taxonomy-and-style.md](../external-integration/input-taxonomy-and-style.md)
 - [../architecture/dataflow-and-pipeline-architecture.md](../architecture/dataflow-and-pipeline-architecture.md)
 
 再按下面模型文档查看各类输入如何落到具体对象。
@@ -49,13 +50,14 @@
 
 ## 建议阅读顺序
 
-1. [host-inventory-and-runtime-state.md](./host-inventory-and-runtime-state.md)
-2. [host-responsibility-and-maintainer-model.md](./host-responsibility-and-maintainer-model.md)
-3. [host-pod-network-topology-model.md](./host-pod-network-topology-model.md)
-4. [business-system-service-topology-model.md](./business-system-service-topology-model.md)
-5. [cluster-namespace-workload-topology-model.md](./cluster-namespace-workload-topology-model.md)
-6. [runtime-binding-model.md](./runtime-binding-model.md)
-7. [endpoint-and-dependency-observation-model.md](./endpoint-and-dependency-observation-model.md)
-8. [software-normalization-and-vuln-enrichment.md](./software-normalization-and-vuln-enrichment.md)
-9. [public-vulnerability-source-ingestion.md](./public-vulnerability-source-ingestion.md)
-10. [host-process-software-vulnerability-graph.md](./host-process-software-vulnerability-graph.md)
+1. [../external-integration/input-taxonomy-and-style.md](../external-integration/input-taxonomy-and-style.md)
+2. [host-inventory-and-runtime-state.md](./host-inventory-and-runtime-state.md)
+3. [host-responsibility-and-maintainer-model.md](./host-responsibility-and-maintainer-model.md)
+4. [host-pod-network-topology-model.md](./host-pod-network-topology-model.md)
+5. [business-system-service-topology-model.md](./business-system-service-topology-model.md)
+6. [cluster-namespace-workload-topology-model.md](./cluster-namespace-workload-topology-model.md)
+7. [runtime-binding-model.md](./runtime-binding-model.md)
+8. [endpoint-and-dependency-observation-model.md](./endpoint-and-dependency-observation-model.md)
+9. [software-normalization-and-vuln-enrichment.md](./software-normalization-and-vuln-enrichment.md)
+10. [public-vulnerability-source-ingestion.md](./public-vulnerability-source-ingestion.md)
+11. [host-process-software-vulnerability-graph.md](./host-process-software-vulnerability-graph.md)

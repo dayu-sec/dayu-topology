@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    BusinessDomain, HostInventory, HostRuntimeState, ResponsibilityAssignment, ServiceEntity,
-    ServiceInstance, Subject,
+    BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, NetworkSegment,
+    ResponsibilityAssignment, ServiceEntity, ServiceInstance, Subject,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,7 +27,18 @@ pub struct BusinessOverviewView {
 pub struct HostTopologyView {
     pub host: HostInventory,
     pub latest_runtime: Option<HostRuntimeState>,
+    pub network_segments: Vec<NetworkSegment>,
+    pub network_assocs: Vec<HostNetAssoc>,
     pub services: Vec<ServiceEntity>,
+    pub assignments: Vec<ResponsibilityAssignment>,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkTopologyView {
+    pub segment: NetworkSegment,
+    pub hosts: Vec<HostInventory>,
+    pub host_assocs: Vec<HostNetAssoc>,
     pub assignments: Vec<ResponsibilityAssignment>,
     pub generated_at: DateTime<Utc>,
 }

@@ -203,6 +203,37 @@ ExternalSyncCursor {
 
 ---
 
+**图：外部责任同步流程**
+
+```mermaid
+flowchart LR
+  subgraph External["外部系统"]
+    CMDB["CMDB"]
+    LDAP["LDAP / IAM"]
+    Oncall["Oncall"]
+  end
+  subgraph Sync["同步管线"]
+    Connector["Connector<br/>auth / paging / rate limit"]
+    Stage["Fetch & Stage<br/>raw payload"]
+    Resolve["Normalize & Resolve<br/>external ID -> Subject"]
+    Persist["Persist<br/>ResponsibilityAssignment"]
+    Cursor["Advance Cursor<br/>ExternalSyncCursor"]
+  end
+  Store[("PostgreSQL<br/>subject / assignment / cursor")]
+
+  CMDB --> Connector
+  LDAP --> Connector
+  Oncall --> Connector
+  Connector --> Stage --> Resolve --> Persist --> Cursor
+  Stage --> Store
+  Persist --> Store
+  Cursor --> Store
+```
+
+> 外部系统身份经 `ExternalIdentityLink` 关联到内部 `Subject`，同步通过 `ExternalSyncCursor` 保证增量推进。Cursor 只在持久化成功后推进。
+
+---
+
 ## 7. 同步对象映射策略
 
 ### 7.1 主机归属来自 CMDB

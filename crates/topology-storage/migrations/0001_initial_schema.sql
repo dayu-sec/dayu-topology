@@ -136,6 +136,60 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_host_inventory_machine_id
     ON host_inventory(machine_id)
     WHERE machine_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS network_domain (
+    network_domain_id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    environment_id UUID,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (tenant_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS network_segment (
+    network_segment_id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    network_domain_id UUID REFERENCES network_domain(network_domain_id),
+    environment_id UUID,
+    name TEXT NOT NULL,
+    cidr TEXT,
+    gateway_ip TEXT,
+    address_family TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (tenant_id, name)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_network_segment_cidr
+    ON network_segment(tenant_id, cidr)
+    WHERE cidr IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS host_net_assoc (
+    assoc_id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    host_id UUID NOT NULL REFERENCES host_inventory(host_id),
+    network_segment_id UUID NOT NULL REFERENCES network_segment(network_segment_id),
+    ip_addr TEXT NOT NULL,
+    iface_name TEXT,
+    valid_from TIMESTAMPTZ NOT NULL,
+    valid_to TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    CHECK (valid_to IS NULL OR valid_to > valid_from)
+);
+
+CREATE INDEX IF NOT EXISTS idx_host_net_assoc_host
+    ON host_net_assoc(host_id);
+
+CREATE INDEX IF NOT EXISTS idx_host_net_assoc_segment
+    ON host_net_assoc(network_segment_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_host_net_assoc_open_interval
+    ON host_net_assoc(host_id, network_segment_id, ip_addr)
+    WHERE valid_to IS NULL;
+
 CREATE TABLE IF NOT EXISTS pod_inventory (
     pod_id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,

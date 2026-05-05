@@ -676,6 +676,23 @@ parse error log
 
 ---
 
+**图：软件与漏洞 ER 关系**
+
+```mermaid
+erDiagram
+  SoftwareProduct ||--o{ SoftwareVersion : has-version
+  SoftwareVersion ||--o{ SoftwareArtifact : has-artifact
+  SoftwareArtifact ||--o{ ArtifactVerification : verified-by
+  SoftwareVersion ||--o{ SoftwareVulnerabilityFinding : affected-by
+  SoftwareArtifact ||--o{ SoftwareVulnerabilityFinding : affected-by
+  SoftwareVersion ||--o{ SoftwareBugFinding : has-bug
+  SoftwareArtifact ||--o{ SoftwareBugFinding : has-bug
+```
+
+> 软件按 `Product → Version → Artifact` 三层归一。漏洞/Bug 通常挂在 `SoftwareVersion` 上，必要时精确到 `SoftwareArtifact`。`ArtifactVerification` 通过 hash/签名/包源验证制品可信性。
+
+---
+
 ## 6. 标识体系
 
 ### 6.1 内部主键

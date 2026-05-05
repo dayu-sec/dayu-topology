@@ -19,6 +19,7 @@
 - [`../glossary.md`](../glossary.md)
 - [`system-architecture.md`](./system-architecture.md)
 - [`unified-model-overview.md`](./unified-model-overview.md)
+- [`../external-integration/external-input-spec.md`](../external-integration/external-input-spec.md)
 - [`../model/unified-topology-schema.md`](../model/unified-topology-schema.md)
 
 ---
@@ -39,6 +40,12 @@
 - 再做归一与主键解析
 - 然后落主库
 - 最后投影成可查视图
+
+进一步建议固定：
+
+- 模型构建由统一 ingest pipeline 驱动，而不是由某一种输入载体驱动
+- `queue` 和 `file` 都只是 ingest source，不是不同语义路径
+- 不论输入来自消息、文件、批量导入还是同步任务，都必须先收敛成统一 `IngestEnvelope`
 
 ---
 
@@ -612,23 +619,134 @@
 
 ---
 
-## 8. 数据驱动处理过程
+## 8. Multi-source Ingest Model
+
+> **与部署形态的关系**：本节描述的是逻辑架构，不是部署拓扑。第一版单体部署（见 [`service-and-deployment-architecture.md`](./service-and-deployment-architecture.md)）中，Intake Consumer、Resolver Worker、Materializer 等角色在**同一进程内**以异步任务形式运行。输入载体可以是外部 message queue，也可以是文件导入、数据库 job table 或进程内 channel。Protocol registry 和 partition_key 设计按完整形态给出，单体阶段可简化；成熟后若演进到 API / Worker / Sync 三分部署，再逐步把这些输入与消费角色拆分为独立进程。
+
+### 8.1 为什么采用 multi-source ingest
+
+对于 `dayu-topology` 这类多来源、多协议、跨时间逐步补全对象的系统，第一版建议：
+
+- 外部 producer 产出结构化输入
+- 输入可以通过 queue / stream，也可以通过 file / batch 进入系统
+- 在中心侧统一做 envelope、candidate、resolver、materializer
+
+原因：
+
+- 输入源多、协议不一致，需要统一 intake
+- 同一对象会被多源逐步补全，不能要求 producer 直接理解中心模型
+- 需要同时支持重试、回放、批量导入、死信、削峰和幂等控制
+- 需要允许"先有 discovery、后有 k8s、再有 cmdb"的增量建模过程
+
+真正驱动统一 ingest pipeline 的写路径角色是：Intake Consumer、Parser / Validator、Candidate Extractor、Resolver Worker、Materializer。multi-source input 驱动 intake，resolver 驱动语义建立，materializer 驱动中心模型落库。
+
+### 8.2 协议输入格式
+
+进入统一 pipeline 的应是符合某协议族的结构化输入。若输入来自消息系统，建议每条消息至少带有：
+
+```text
+ProtocolMessage {
+  protocol_family   // e.g. edge.discovery, k8s.inventory, cmdb.catalog
+  message_kind      // e.g. snapshot, delta, summary, batch_upsert
+  schema_version
+  tenant_id
+  partition_key
+  message_id
+  observed_at?
+  payload
+}
+```
+
+协议输入只是外部事实，不直接等于中心对象。producer 不负责决定中心主键，unresolved 数据必须停留在 candidate / evidence 层。
+
+对于文件输入，建议也映射到同一语义结构，并至少支持：
+
+- `snapshot`
+- `delta`
+- `batch_upsert`
+
+文件输入应支持：
+
+- 重复执行
+- 幂等导入
+- 回放
+- schema version 校验
+- import job 记录
+
+### 8.3 Protocol Registry
+
+第一版建议显式维护 protocol registry，固定：支持哪些 `protocol_family`、每个协议族的 `message_kind`、对应的 parser/validator/candidate extractor、以及 `partition_key` 规则。不建议消费端根据 payload 猜协议类型。
+
+第一版至少固定以下协议族：
+
+| `protocol_family` | `message_kind` 示例 | 主要用途 |
+| --- | --- | --- |
+| `edge.discovery` | `snapshot` | 边缘 discovery 资源快照 |
+| `k8s.inventory` | `snapshot`、`delta` | cluster / namespace / workload / pod / endpoint |
+| `cmdb.catalog` | `snapshot`、`delta` | business / system / service / host group / ownership |
+| `iam.subject` | `snapshot`、`delta` | 用户、团队、组织与成员关系 |
+| `oncall.schedule` | `snapshot`、`delta` | 值班、升级链和告警路由 |
+| `telemetry.dependency` | `summary_window` | trace / access log / flow 摘要 |
+| `telemetry.endpoint` | `summary_window` | DNS / gateway / endpoint 解析摘要 |
+| `security.software` | `snapshot`、`delta` | software evidence / artifact verification |
+| `security.vulnerability` | `snapshot`、`delta` | advisory / finding 输入 |
+| `risk.signal` | `summary_window` | 风险候选、健康因子候选 |
+| `manual.catalog` | `batch_upsert` | 人工导入的目录、依赖、责任关系 |
+
+### 8.4 `partition_key` 设计
+
+`partition_key` 应按对象冲突域切分，而非按来源系统粗糙切分。同一对象可能被多来源逐步补全，相关消息若并发 materialize 容易造成 identity link 和 binding 抖动。
+
+建议：`partition_key` 至少包含 `tenant_id`，其下按该协议最核心的对象冲突域拼接。
+
+| `protocol_family` | 建议 `partition_key` | 说明 |
+| --- | --- | --- |
+| `edge.discovery` | `tenant_id + host_identity` | host/process/container/file 围绕单 host 冲突域 |
+| `k8s.inventory` | `tenant_id + cluster_id` | cluster 内对象关系耦合较强 |
+| `cmdb.catalog` | `tenant_id + external_catalog_scope` | 按业务域或 cmdb object scope 分区 |
+| `iam.subject` | `tenant_id + subject_external_ref` | subject identity 冲突域 |
+| `oncall.schedule` | `tenant_id + schedule_or_route_ref` | schedule/route 级串行化 |
+| `telemetry.dependency` | `tenant_id + caller_service_or_endpoint` | 依赖观测围绕调用方聚合 |
+| `telemetry.endpoint` | `tenant_id + endpoint_signature` | endpoint resolution 冲突域 |
+| `security.software` | `tenant_id + host_identity` 或 `tenant_id + artifact_identity` | 取决于证据类型 |
+| `security.vulnerability` | `tenant_id + product_or_artifact_identity` | finding 归并冲突域 |
+| `risk.signal` | `tenant_id + affected_object_ref` | 风险候选围绕受影响对象聚合 |
+| `manual.catalog` | `tenant_id + batch_scope` | 同一批人工导入保持顺序 |
+
+同一 `partition_key` 内顺序消费或串行 materialization，不同 `partition_key` 之间允许并发。队列分区只能降低冲突概率，不能替代数据库约束和幂等写入。
+
+### 8.5 死信与不可解析消息
+
+- 不支持的 `protocol_family` / `schema_version`：直接 reject 或 dead letter
+- schema 校验失败：进入 dead letter
+- 可重试型外部依赖失败：进入 retry queue
+- 语义未决但结构合法的消息：转换成 unresolved candidate / evidence 保留，不丢弃
+
+---
+
+## 9. 数据驱动处理过程
 
 统一处理过程如下：
 
 ```text
-input data
+raw input (queue / file / batch)
+  -> intake consumer
+  -> parser / validator (按 protocol_family + schema_version 选择)
   -> ingest envelope
-  -> parse / validate
-  -> normalize
-  -> evidence / candidate / observation
+  -> candidate / evidence / observation extraction
   -> identity resolution
   -> confidence / conflict handling
   -> materialize source-of-truth model
   -> derive health / risk / topology views
 ```
 
-### 8.1 Ingest Envelope
+这意味着：
+
+- 文件输入不是旁路
+- queue 输入也不是更“高级”的唯一路径
+- 真正稳定的是 canonical ingest pipeline
+
+### 9.1 Ingest Envelope
 
 所有输入先包装成统一 envelope。
 
@@ -637,9 +755,11 @@ input data
 - `tenant_id`
 - `source`
 - `source_type`
+- `protocol_family`
+- `message_kind`
+- `schema_version`
 - `ingest_id`
 - `ingested_at`
-- `schema_version`
 - `payload_ref`
 - `raw_hash`
 
@@ -649,7 +769,7 @@ input data
 - 原始数据可放对象存储、日志系统或 staging 表
 - 主模型只保存归一结果和必要证据引用
 
-### 8.2 Parse / Validate
+### 9.2 Parse / Validate
 
 处理内容：
 
@@ -665,7 +785,7 @@ input data
 - 字段缺失进入 candidate / unresolved
 - 不因单条失败阻塞整个批次
 
-### 8.3 Normalize
+### 9.3 Normalize
 
 处理内容：
 
@@ -682,7 +802,7 @@ input data
 - `10.0.1.1:8080`、`host:port` 归一为 endpoint candidate
 - `v1.2.3-build7` 归一为 `normalized_version`
 
-### 8.4 Evidence / Candidate / Observation
+### 9.4 Evidence / Candidate / Observation
 
 不同数据先进入不同中间层。
 
@@ -697,7 +817,7 @@ input data
 - 错误日志先进入 bug evidence / bug observation
 - 软件路径和 hash 先进入 `SoftwareEvidence`
 
-### 8.5 Identity Resolution
+### 9.5 Identity Resolution
 
 把外部事实解析成中心 ID。
 
@@ -719,7 +839,7 @@ input data
 - 多候选冲突时进入 candidate，不强行选择
 - 解析过程要保留来源、置信度和证据
 
-### 8.6 Confidence / Conflict
+### 9.6 Confidence / Conflict
 
 每个推断性结果都应有置信度。
 
@@ -736,7 +856,7 @@ input data
 - 关系对象通过 `valid_from / valid_to` 保留历史
 - 不直接删除旧事实，优先写失效时间
 
-### 8.7 Materialize
+### 9.7 Materialize
 
 将解析完成的数据写入 source-of-truth 表。
 
@@ -748,7 +868,7 @@ input data
 - evidence / observation 可按保留策略冷热分层
 - 派生视图失败不回滚主对象
 
-### 8.8 Derive Views
+### 9.8 Derive Views
 
 主模型写入后，再派生查询视图。
 
@@ -763,9 +883,9 @@ input data
 
 ---
 
-## 9. 典型输入处理样例
+## 10. 典型输入处理样例
 
-### 9.1 从访问日志生成服务依赖
+### 10.1 从访问日志生成服务依赖
 
 ```text
 access log
@@ -783,7 +903,7 @@ access log
 - 健康检查和 sidecar 控制面流量要过滤
 - 地址解析失败时停留在 observation / unresolved bucket
 
-### 9.2 从错误日志发现 BUG
+### 10.2 从错误日志发现 BUG
 
 ```text
 error log / crash dump
@@ -801,7 +921,7 @@ error log / crash dump
 - 需要重复出现、签名稳定、能归因到版本或制品
 - 环境问题、配置问题、外部依赖不可用要先排除
 
-### 9.3 从进程发现软件和运行程序真实性
+### 10.3 从进程发现软件和运行程序真实性
 
 ```text
 process facts
@@ -818,7 +938,7 @@ process facts
 - 可执行文件和脚本优先用 `sha256` 归一
 - 签名、包源、镜像和远程证明用于提高可信度
 
-### 9.4 从资源指标生成业务健康因子
+### 10.4 从资源指标生成业务健康因子
 
 ```text
 host / pod / workload metrics
@@ -834,7 +954,7 @@ host / pod / workload metrics
 - 它是资源、BUG、漏洞、依赖、威胁五类信号的摘要
 - 原始证据通过 `evidence_ref` 回指
 
-### 9.5 从外部服务访问形成外部依赖
+### 10.5 从外部服务访问形成外部依赖
 
 ```text
 gateway log / dns / access log
@@ -852,7 +972,7 @@ gateway log / dns / access log
 
 ---
 
-## 10. 主数据流
+## 11. 主数据流
 
 ```text
 Sources
@@ -865,9 +985,9 @@ Sources
 
 ---
 
-## 11. Pipeline 阶段
+## 12. Pipeline 阶段
 
-### 11.1 Source Intake
+### 12.1 Source Intake
 
 职责：
 
@@ -879,7 +999,7 @@ Sources
 
 - `IngestEnvelope`
 
-### 11.2 Normalize & Resolve
+### 12.2 Normalize & Resolve
 
 职责：
 
@@ -896,7 +1016,14 @@ Sources
 - 运行态快照候选
 - explain/evidence 候选
 
-### 11.3 Write Source of Truth
+Normalize Engine 内部分为四类 resolver：
+
+- **Identity Resolver**：负责 host / service / workload / subject / software identity
+- **Topology Resolver**：负责 service -> workload、workload -> pod、pod -> host、pod/host -> network
+- **Runtime Resolver**：负责 service instance 归属、runtime binding、endpoint resolution
+- **Security Resolver**：负责 software normalization、vulnerability enrichment 接入前置归一
+
+### 12.3 Write Source of Truth
 
 职责：
 
@@ -909,8 +1036,13 @@ Sources
 
 - 主写路径必须幂等
 - 不应因为派生视图失败而回滚主目录对象
+- normalize 结果必须可 explain，identity resolution 失败不能静默乱归属
+- binding / dependency / responsibility 等高语义关系保留来源与置信度
+- unresolved candidate 不得硬写成正式关系
+- 写路径优先保证幂等和一致性，不优先追求极致吞吐
+- queue 负责传输和解耦，不负责决定中心对象语义
 
-### 11.4 Build Derived Views
+### 12.4 Build Derived Views
 
 职责：
 
@@ -925,7 +1057,7 @@ Sources
 - 可重建
 - 不应替代 source of truth
 
-### 11.5 Serve Query
+### 12.5 Serve Query
 
 职责：
 
@@ -935,9 +1067,9 @@ Sources
 
 ---
 
-## 12. 重点 pipeline
+## 13. 重点 pipeline
 
-### 12.1 资源拓扑 pipeline
+### 13.1 资源拓扑 pipeline
 
 ```text
 edge discovery
@@ -947,7 +1079,7 @@ edge discovery
   -> topology views
 ```
 
-### 12.2 责任治理 pipeline
+### 13.2 责任治理 pipeline
 
 ```text
 cmdb/ldap/oncall
@@ -956,7 +1088,7 @@ cmdb/ldap/oncall
   -> effective responsibility view
 ```
 
-### 12.3 软件安全 pipeline
+### 13.3 软件安全 pipeline
 
 ```text
 process/container/package facts
@@ -968,7 +1100,7 @@ process/container/package facts
   -> impact view
 ```
 
-### 12.4 业务稳定性 pipeline
+### 13.4 业务稳定性 pipeline
 
 ```text
 runtime metrics / bug findings / vuln findings / dep observations / threat signals
@@ -980,33 +1112,33 @@ runtime metrics / bug findings / vuln findings / dep observations / threat signa
 
 ---
 
-## 13. 关键数据边界
+## 14. 关键数据边界
 
 第一版必须固定以下边界：
 
-### 13.1 原始输入与归一对象分开
+### 14.1 原始输入与归一对象分开
 
 - intake payload 不是中心主对象
 
-### 13.2 主对象与派生视图分开
+### 14.2 主对象与派生视图分开
 
 - 派生视图失败不应污染主数据
 
-### 13.3 运行态快照与稳定目录对象分开
+### 14.3 运行态快照与稳定目录对象分开
 
 - `observed_at` 数据不要覆盖 inventory
 
-### 13.4 explain/evidence 与最终结论分开
+### 14.4 explain/evidence 与最终结论分开
 
 - `evidence` 支撑结论
 - 但不等于最终关系对象本身
 
-### 13.5 候选对象与正式对象分开
+### 14.5 候选对象与正式对象分开
 
 - 未解析出内部 ID 的事实不能写正式关系
 - 只能进入 evidence / candidate / observation
 
-### 13.6 观测结果与声明事实分开
+### 14.6 观测结果与声明事实分开
 
 - 流量观测出的依赖不等于声明依赖
 - 漏洞情报命中不等于最终风险结论
@@ -1014,7 +1146,7 @@ runtime metrics / bug findings / vuln findings / dep observations / threat signa
 
 ---
 
-## 14. 第一版失败处理建议
+## 15. 第一版失败处理建议
 
 第一版建议：
 
@@ -1025,7 +1157,7 @@ runtime metrics / bug findings / vuln findings / dep observations / threat signa
 
 ---
 
-## 15. 当前建议
+## 16. 当前建议
 
 当前建议固定为：
 

@@ -64,15 +64,30 @@ crates/
 - [doc/architecture/system-architecture.md](./doc/architecture/system-architecture.md)
 - [doc/architecture/storage-architecture.md](./doc/architecture/storage-architecture.md)
 - [doc/architecture/service-and-deployment-architecture.md](./doc/architecture/service-and-deployment-architecture.md)
-- [doc/architecture/ingest-and-normalization-architecture.md](./doc/architecture/ingest-and-normalization-architecture.md)
 - [doc/architecture/external-sync-architecture.md](./doc/architecture/external-sync-architecture.md)
 - [doc/architecture/query-and-read-model-architecture.md](./doc/architecture/query-and-read-model-architecture.md)
 - [doc/architecture/identity-resolution-architecture.md](./doc/architecture/identity-resolution-architecture.md)
 - [doc/architecture/security-and-access-control-architecture.md](./doc/architecture/security-and-access-control-architecture.md)
 - [doc/architecture/observability-and-audit-architecture.md](./doc/architecture/observability-and-audit-architecture.md)
 - [doc/architecture/dataflow-and-pipeline-architecture.md](./doc/architecture/dataflow-and-pipeline-architecture.md)
+- [doc/external-integration/README.md](./doc/external-integration/README.md)
+- [doc/external-integration/external-input-spec.md](./doc/external-integration/external-input-spec.md)
+- [doc/external-integration/file-ingest-spec.md](./doc/external-integration/file-ingest-spec.md)
 - [doc/architecture/unified-model-overview.md](./doc/architecture/unified-model-overview.md)
 - [doc/model/README.md](./doc/model/README.md)
 - [doc/model/unified-topology-schema.md](./doc/model/unified-topology-schema.md)
 - [doc/external/warp-insight-edge.md](./doc/external/warp-insight-edge.md)
 - [doc/roadmap/bootstrap-plan.md](./doc/roadmap/bootstrap-plan.md)
+
+## 文件导入示例
+
+当前单体模式支持从 normalized JSON payload 文件载入 P0 最小闭环数据：
+
+```bash
+cargo run -p topology-app -- file fixtures/file-ingest/minimal-host-network.json
+cargo run -p topology-app -- file fixtures/file-ingest/small-office.json
+```
+
+文件格式规范见 [doc/external-integration/file-ingest-spec.md](./doc/external-integration/file-ingest-spec.md)。
+
+目标态外部输入数据示例放在 [fixtures/external-input/target](./fixtures/external-input/target)，协议规范见 [doc/external-integration/external-input-spec.md](./doc/external-integration/external-input-spec.md)。

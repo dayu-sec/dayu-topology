@@ -1,8 +1,9 @@
 use topology_domain::{
     BusinessDomain, ClusterInventory, ExternalIdentityLink, ExternalSyncCursor, HostInventory,
-    HostRuntimeState, NamespaceInventory, ObjectKind, PodInventory, PodPlacement,
-    ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance, Subject, Subsystem,
-    SystemBoundary, TenantId, WorkloadEntity, WorkloadPodMembership,
+    HostNetAssoc, HostRuntimeState, NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind,
+    PodInventory, PodPlacement, ResponsibilityAssignment, RuntimeBinding, ServiceEntity,
+    ServiceInstance, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
+    WorkloadPodMembership,
 };
 use uuid::Uuid;
 
@@ -26,8 +27,11 @@ impl Default for Page {
 pub trait CatalogStore {
     fn upsert_business(&self, business: &BusinessDomain) -> StorageResult<()>;
     fn get_business(&self, business_id: Uuid) -> StorageResult<Option<BusinessDomain>>;
-    fn list_businesses(&self, tenant_id: TenantId, page: Page)
-        -> StorageResult<Vec<BusinessDomain>>;
+    fn list_businesses(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<BusinessDomain>>;
 
     fn upsert_system(&self, system: &SystemBoundary) -> StorageResult<()>;
     fn get_system(&self, system_id: Uuid) -> StorageResult<Option<SystemBoundary>>;
@@ -54,6 +58,20 @@ pub trait CatalogStore {
     fn upsert_host(&self, host: &HostInventory) -> StorageResult<()>;
     fn get_host(&self, host_id: Uuid) -> StorageResult<Option<HostInventory>>;
     fn list_hosts(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<HostInventory>>;
+
+    fn upsert_network_domain(&self, domain: &NetworkDomain) -> StorageResult<()>;
+    fn get_network_domain(&self, network_domain_id: Uuid) -> StorageResult<Option<NetworkDomain>>;
+
+    fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
+    fn get_network_segment(
+        &self,
+        network_segment_id: Uuid,
+    ) -> StorageResult<Option<NetworkSegment>>;
+    fn list_network_segments(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkSegment>>;
 
     fn upsert_subject(&self, subject: &Subject) -> StorageResult<()>;
     fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>>;
@@ -85,6 +103,9 @@ pub trait RuntimeStore {
     ) -> StorageResult<()>;
 
     fn upsert_pod_placement(&self, placement: &PodPlacement) -> StorageResult<()>;
+
+    fn upsert_host_net_assoc(&self, assoc: &HostNetAssoc) -> StorageResult<()>;
+    fn list_host_net_assocs(&self, host_id: Uuid, page: Page) -> StorageResult<Vec<HostNetAssoc>>;
 }
 
 pub trait GovernanceStore {

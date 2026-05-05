@@ -95,13 +95,16 @@ ServiceEntity {
 
 <!-- GLOSSARY_SYNC:START terms=SvcEp,InstEp,DepEdge,DepObs,DepEv,EpRes -->
 | 术语 | 中文名 | English | 中文说明 |
-| --- | --- | --- | --- |
 | `SvcEp` | 服务稳定入口 | Service endpoint | 表示服务的稳定访问入口，例如 DNS、VIP、Ingress。 |
 | `InstEp` | 实例运行地址 | Instance endpoint | 表示实例当前运行地址，例如 Pod IP:Port 或 Host IP:Port。 |
 | `DepEdge` | 服务依赖边 | Dependency edge | 表示服务依赖图中的一条边，不直接承载原始观测明细。 |
 | `DepObs` | 依赖观测对象 | Dependency observation object | 表示从运行数据归一出的依赖观测摘要。 |
 | `DepEv` | 依赖观测证据 | Dependency evidence | 表示支撑依赖观测结论的具体证据。 |
 | `EpRes` | 地址归一结果 | Endpoint resolution object | 表示地址如何解析回服务或实例的桥接对象。 |
+
+
+
+
 <!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `SvcEp`
@@ -310,6 +313,24 @@ EpRes {
 
 - 依赖观测通常先看到地址，再把地址归一到 service / instance
 - 这层对象是地址世界和服务世界之间的桥梁
+
+---
+
+**图：端点与依赖观测 ER 关系**
+
+```mermaid
+erDiagram
+  ServiceEntity ||--o{ SvcEp : exposes
+  ServiceInstance ||--o{ InstEp : runs-on
+  SvcEp ||--o{ EpRes : resolves-to
+  InstEp ||--o{ EpRes : resolves-to
+  EpRes ||--o{ DepObs : feeds
+  DepObs ||--o{ DepEdge : derives
+  ServiceEntity ||--o{ DepEdge : source
+  ServiceEntity ||--o{ DepEdge : target
+```
+
+> `SvcEp` 是服务稳定入口地址，`InstEp` 是实例运行时地址。`EpRes` 将观测到的地址解析回服务/实例。多次 `DepObs`（观测证据）聚合后生成 `DepEdge`（稳定依赖边）。
 
 ---
 

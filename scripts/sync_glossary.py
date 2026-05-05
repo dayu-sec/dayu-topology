@@ -1,119 +1,138 @@
 #!/usr/bin/env python3
-"""Sync glossary snippets from doc/glossary.md into model documents.
+"""
+sync_glossary.py
+
+Read canonical term definitions from doc/glossary.md (GLOSSARY_SYNC_SOURCE block)
+and sync them into all model documents that have GLOSSARY_SYNC markers.
 
 Usage:
-  python3 scripts/sync_glossary.py
+    python3 scripts/sync_glossary.py
 
-The script reads the table between:
-  <!-- GLOSSARY_SYNC_SOURCE:START -->
-  <!-- GLOSSARY_SYNC_SOURCE:END -->
-
-Then it updates blocks like:
-  <!-- GLOSSARY_SYNC:START terms=HostInventory,HostRuntimeState -->
-  ...
-  <!-- GLOSSARY_SYNC:END -->
+The script is idempotent: running it multiple times produces the same result
+as long as the glossary source table hasn't changed.
 """
 
-from __future__ import annotations
-
+import glob
+import os
 import re
-from pathlib import Path
+import sys
+from typing import Dict
+
+START_MARKER = "<!-- GLOSSARY_SYNC:START"
+END_MARKER = "<!-- GLOSSARY_SYNC:END -->"
+SOURCE_MARKER = "<!-- GLOSSARY_SYNC_SOURCE:START -->"
+SOURCE_END_MARKER = "<!-- GLOSSARY_SYNC_SOURCE:END -->"
+
+DOC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "doc")
 
 
-ROOT = Path(__file__).resolve().parents[1]
-GLOSSARY = ROOT / "doc" / "glossary.md"
-DOC_ROOT = ROOT / "doc"
+def parse_glossary_source() -> Dict[str, str]:
+    """Parse glossary.md GLOSSARY_SYNC_SOURCE block into {term: row_string} dict."""
+    glossary_path = os.path.join(DOC_DIR, "glossary.md")
+    if not os.path.exists(glossary_path):
+        print(f"Error: glossary.md not found at {glossary_path}")
+        sys.exit(1)
 
-SOURCE_START = "<!-- GLOSSARY_SYNC_SOURCE:START -->"
-SOURCE_END = "<!-- GLOSSARY_SYNC_SOURCE:END -->"
-BLOCK_START_RE = re.compile(r"<!-- GLOSSARY_SYNC:START terms=([A-Za-z0-9_,]+) -->")
-BLOCK_END = "<!-- GLOSSARY_SYNC:END -->"
+    with open(glossary_path, "r", encoding="utf-8") as f:
+        content = f.read()
 
+    # Extract source block
+    pattern = re.escape(SOURCE_MARKER) + r"(.*?)" + re.escape(SOURCE_END_MARKER)
+    match = re.search(pattern, content, re.DOTALL)
+    if not match:
+        print("Error: GLOSSARY_SYNC_SOURCE block not found in glossary.md")
+        sys.exit(1)
 
-def load_glossary_rows() -> dict[str, dict[str, str]]:
-    text = GLOSSARY.read_text(encoding="utf-8")
-    start = text.index(SOURCE_START) + len(SOURCE_START)
-    end = text.index(SOURCE_END)
-    block = text[start:end].strip().splitlines()
-    rows: dict[str, dict[str, str]] = {}
-    for line in block:
-        line = line.strip()
-        if not line.startswith("|"):
+    block = match.group(1).strip()
+    lines = block.split("\n")
+
+    terms = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("| -") or stripped.startswith("| T"):
             continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) != 4:
-            continue
-        if cells[0] in {"Term", "---"}:
-            continue
-        term = cells[0].strip("`")
-        rows[term] = {
-            "term_md": cells[0],
-            "zh_name": cells[1],
-            "en_name": cells[2],
-            "zh_desc": cells[3],
-        }
-    return rows
+        # Parse row: | `Term` | 中文名 | English | 中文说明 |
+        cols = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cols) >= 4:
+            term_key = cols[0].strip("`")
+            terms[term_key] = stripped
+
+    print(f"Parsed {len(terms)} terms from glossary source")
+    return terms
 
 
-def build_block(terms: list[str], rows: dict[str, dict[str, str]]) -> str:
-    lines = [
-        "| 术语 | 中文名 | English | 中文说明 |",
-        "| --- | --- | --- | --- |",
-    ]
-    for term in terms:
-        row = rows.get(term)
-        if row is None:
-            raise KeyError(f"glossary term not found: {term}")
-        lines.append(
-            f"| {row['term_md']} | {row['zh_name']} | {row['en_name']} | {row['zh_desc']} |"
-        )
-    return "\n".join(lines)
+def sync_file(filepath: str, glossary: Dict[str, str]) -> bool:
+    """Sync GLOSSARY_SYNC blocks in a single file. Returns True if changed."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
 
-
-def sync_file(path: Path, rows: dict[str, dict[str, str]]) -> bool:
-    original = path.read_text(encoding="utf-8")
-    text = original
-    cursor = 0
     changed = False
+    result = content
 
-    while True:
-        match = BLOCK_START_RE.search(text, cursor)
-        if match is None:
-            break
-        block_start = match.start()
-        content_start = match.end()
-        block_end = text.find(BLOCK_END, content_start)
-        if block_end == -1:
-            raise ValueError(f"missing {BLOCK_END} in {path}")
-        terms = [term for term in match.group(1).split(",") if term]
-        replacement = "\n" + build_block(terms, rows) + "\n"
-        text = text[:content_start] + replacement + text[block_end:]
-        cursor = content_start + len(replacement) + len(BLOCK_END)
-        changed = True
+    # Find all GLOSSARY_SYNC blocks
+    block_pattern = re.compile(
+        r"(" + re.escape(START_MARKER) + r"\s+terms=([^>]+)\s*-->\s*\n)"
+        r"(.*?)"
+        r"(\s*" + re.escape(END_MARKER) + r")",
+        re.DOTALL,
+    )
 
-    if changed and text != original:
-        path.write_text(text, encoding="utf-8")
-    return changed and text != original
+    def replace_block(match):
+        nonlocal changed
+        prefix = match.group(1)
+        terms_str = match.group(2)
+        suffix = match.group(4)
+
+        requested_terms = [t.strip() for t in terms_str.split(",")]
+
+        # Build synced rows
+        synced_rows = []
+        for term in requested_terms:
+            if term in glossary:
+                synced_rows.append(glossary[term])
+            else:
+                print(f"  Warning: term '{term}' not found in glossary source")
+
+        # Reconstruct block with header from original
+        old_block = match.group(3)
+        old_lines = old_block.strip().split("\n")
+        header_row = old_lines[0] if old_lines else "| 术语 | 中文名 | English | 中文说明 |"
+
+        new_body = header_row + "\n" + "\n".join(synced_rows)
+        new_block = prefix + new_body + suffix
+
+        if match.group(0) != new_block:
+            changed = True
+
+        return new_block
+
+    result = block_pattern.sub(replace_block, result)
+
+    if changed:
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(result)
+        return True
+    return False
 
 
-def main() -> None:
-    rows = load_glossary_rows()
-    updated: list[Path] = []
-    for path in DOC_ROOT.rglob("*.md"):
-        if path == GLOSSARY:
-            continue
-        if "GLOSSARY_SYNC:START" not in path.read_text(encoding="utf-8"):
-            continue
-        if sync_file(path, rows):
-            updated.append(path)
+def main():
+    glossary = parse_glossary_source()
 
-    print(f"Glossary rows loaded: {len(rows)}")
-    if updated:
-        print("Updated files:")
-        for path in updated:
-            print(f"- {path.relative_to(ROOT)}")
+    md_files = glob.glob(os.path.join(DOC_DIR, "**/*.md"), recursive=True)
+    # Exclude glossary.md itself
+    md_files = [f for f in md_files if os.path.basename(f) != "glossary.md"]
+
+    updated = 0
+    for filepath in sorted(md_files):
+        relpath = os.path.relpath(filepath, DOC_DIR)
+        if sync_file(filepath, glossary):
+            print(f"  Updated: doc/{relpath}")
+            updated += 1
+
+    if updated == 0:
+        print("All GLOSSARY_SYNC blocks are up to date.")
     else:
-        print("No files updated.")
+        print(f"\nSynced {updated} file(s).")
 
 
 if __name__ == "__main__":

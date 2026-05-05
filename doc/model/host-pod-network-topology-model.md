@@ -118,7 +118,6 @@ PodInventory {
 
 <!-- GLOSSARY_SYNC:START terms=HostInventory,PodInventory,NetworkDomain,NetworkSegment,PodPlacement,PodNetAssoc,HostNetAssoc -->
 | 术语 | 中文名 | English | 中文说明 |
-| --- | --- | --- | --- |
 | `HostInventory` | 主机目录对象 | Host inventory object | 表示稳定的主机资产目录对象，回答“这台主机是谁”。 |
 | `PodInventory` | Pod 目录对象 | Pod inventory object | 表示稳定的 Pod 目录对象，是实际运行副本，不是服务定义。 |
 | `NetworkDomain` | 网络域对象 | Network domain object | 表示较高层的网络边界，下挂多个网络段。 |
@@ -126,6 +125,10 @@ PodInventory {
 | `PodPlacement` | Pod 调度关系 | Pod placement relation | 表示 Pod 在某个时间段调度到哪台主机上。 |
 | `PodNetAssoc` | Pod 网络接入关系 | Pod network association | 表示 Pod 接入哪个网络段，以及对应地址和接口信息。 |
 | `HostNetAssoc` | 主机网络接入关系 | Host network association | 表示主机接入哪个网络段，以及对应地址和接口信息。 |
+
+
+
+
 <!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `HostInventory`
@@ -882,6 +885,23 @@ IngestEnvelope
 
 ---
 
+**图：网络拓扑 ER 关系**
+
+```mermaid
+erDiagram
+  NetworkDomain ||--o{ NetworkSegment : contains
+  NetworkSegment ||--o{ HostNetAssoc : attached-to
+  NetworkSegment ||--o{ PodNetAssoc : attached-to
+  HostInventory ||--o{ HostNetAssoc : has
+  PodInventory ||--o{ PodNetAssoc : has
+  HostInventory ||--o{ PodPlacement : schedules
+  PodInventory ||--o{ PodPlacement : placed-on
+```
+
+> 网络对象（`NetworkDomain` / `NetworkSegment`）是独立资源。`HostNetAssoc` 和 `PodNetAssoc` 是接入关系。`PodPlacement` 表达调度归属。
+
+---
+
 ## 6. 关系图谱
 
 第一版建议固定以下关系：
@@ -1091,7 +1111,324 @@ PodInventory
 
 ---
 
-## 11. 第一版最小落地范围
+## 11. V1 推荐最小字段集与落库草案
+
+本节只收敛第一版建议优先落地的四个网络核心对象：
+
+- `NetworkDomain`
+- `NetworkSegment`
+- `HostNetAssoc`
+- `PodNetAssoc`
+
+目标是：
+
+- 先固定最小字段集
+- 给实现提供可落库草案
+- 不把候选层、证据层和所有扩展属性一次写死
+
+### 11.1 `NetworkDomain`
+
+#### 11.1.1 推荐最小字段集
+
+| 字段名 | 中文名 | 是否必需 | 说明 |
+| --- | --- | --- | --- |
+| `net_domain_id` | 网络域 ID | 必需 | 内部稳定主键 |
+| `tenant_id` | 租户 ID | 必需 | 多租户边界 |
+| `kind` | 网络域类型 | 必需 | 例如 `vpc`、`k8s_cluster_network` |
+| `name` | 网络域名称 | 必需 | 展示名或规范名 |
+| `external_ref` | 外部引用 | 可选 | 云平台、CMDB 或平台侧外部 ID |
+| `metadata` | 扩展元数据 | 可选 | 尽量克制使用 |
+| `created_at` | 创建时间 | 必需 | 创建时间 |
+| `updated_at` | 更新时间 | 必需 | 更新时间 |
+
+建议第一版先固定：
+
+- `net_domain_id`
+- `tenant_id`
+- `kind`
+- `name`
+- `created_at`
+- `updated_at`
+
+#### 11.1.2 SQL 草案
+
+```sql
+create table network_domain (
+  net_domain_id uuid primary key,
+  tenant_id uuid not null,
+  kind text not null,
+  name text not null,
+  external_ref text,
+  metadata jsonb,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create unique index uq_network_domain_tenant_kind_name
+  on network_domain (tenant_id, kind, name);
+
+create index idx_network_domain_tenant_kind
+  on network_domain (tenant_id, kind);
+```
+
+#### 11.1.3 Rust Struct 草案
+
+```rust
+#[derive(Debug, Clone)]
+pub struct NetworkDomain {
+    pub net_domain_id: uuid::Uuid,
+    pub tenant_id: uuid::Uuid,
+    pub kind: String,
+    pub name: String,
+    pub external_ref: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### 11.2 `NetworkSegment`
+
+#### 11.2.1 推荐最小字段集
+
+| 字段名 | 中文名 | 是否必需 | 说明 |
+| --- | --- | --- | --- |
+| `net_seg_id` | 网络段 ID | 必需 | 内部稳定主键 |
+| `net_domain_id` | 网络域 ID | 必需 | 所属网络边界 |
+| `segment_type` | 网络段类型 | 必需 | 例如 `subnet`、`pod_network` |
+| `name` | 网络段名称 | 必需 | 展示名 |
+| `cidr` | 网段 CIDR | 建议必需 | 大多数网络查询依赖该字段 |
+| `gateway_ip` | 网关 IP | 可选 | 不是所有来源都有 |
+| `external_ref` | 外部引用 | 可选 | 子网/网络段外部 ID |
+| `metadata` | 扩展元数据 | 可选 | 先少用 |
+| `created_at` | 创建时间 | 必需 | 创建时间 |
+| `updated_at` | 更新时间 | 必需 | 更新时间 |
+
+建议第一版先固定：
+
+- `net_seg_id`
+- `net_domain_id`
+- `segment_type`
+- `name`
+- `cidr`
+- `created_at`
+- `updated_at`
+
+#### 11.2.2 SQL 草案
+
+```sql
+create table network_segment (
+  net_seg_id uuid primary key,
+  net_domain_id uuid not null references network_domain(net_domain_id),
+  segment_type text not null,
+  name text not null,
+  cidr cidr not null,
+  gateway_ip inet,
+  external_ref text,
+  metadata jsonb,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create unique index uq_network_segment_domain_type_name
+  on network_segment (net_domain_id, segment_type, name);
+
+create index idx_network_segment_domain
+  on network_segment (net_domain_id);
+
+create index idx_network_segment_cidr
+  on network_segment using gist (cidr inet_ops);
+```
+
+#### 11.2.3 Rust Struct 草案
+
+```rust
+#[derive(Debug, Clone)]
+pub struct NetworkSegment {
+    pub net_seg_id: uuid::Uuid,
+    pub net_domain_id: uuid::Uuid,
+    pub segment_type: String,
+    pub name: String,
+    pub cidr: ipnet::IpNet,
+    pub gateway_ip: Option<std::net::IpAddr>,
+    pub external_ref: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### 11.3 `HostNetAssoc`
+
+#### 11.3.1 推荐最小字段集
+
+| 字段名 | 中文名 | 是否必需 | 说明 |
+| --- | --- | --- | --- |
+| `assoc_id` | 接入关系 ID | 必需 | 主键 |
+| `host_id` | 主机 ID | 必需 | 接入主体 |
+| `net_seg_id` | 网络段 ID | 必需 | 接入目标 |
+| `ip_addr` | IP 地址 | 建议必需 | 主机侧查询和地址归因常用 |
+| `interface_name` | 接口名 | 可选 | 例如 `eth0` |
+| `mac_addr` | MAC 地址 | 可选 | 来源不稳定时可为空 |
+| `is_primary` | 是否主接入 | 建议必需 | 默认值可为 `false` |
+| `source` | 数据来源 | 必需 | 例如 `cloud_api`、`host_discovery` |
+| `valid_from` | 生效开始时间 | 必需 | 时态关系必需 |
+| `valid_to` | 生效结束时间 | 可选 | 当前有效时为空 |
+| `created_at` | 创建时间 | 必需 | 创建时间 |
+| `updated_at` | 更新时间 | 必需 | 更新时间 |
+
+建议第一版先固定：
+
+- `assoc_id`
+- `host_id`
+- `net_seg_id`
+- `ip_addr`
+- `source`
+- `valid_from`
+- `created_at`
+- `updated_at`
+
+#### 11.3.2 SQL 草案
+
+```sql
+create table host_net_assoc (
+  assoc_id uuid primary key,
+  host_id uuid not null,
+  net_seg_id uuid not null references network_segment(net_seg_id),
+  interface_name text,
+  ip_addr inet not null,
+  mac_addr macaddr,
+  is_primary boolean not null default false,
+  source text not null,
+  valid_from timestamptz not null,
+  valid_to timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create index idx_host_net_assoc_host_active
+  on host_net_assoc (host_id, valid_to);
+
+create index idx_host_net_assoc_seg_active
+  on host_net_assoc (net_seg_id, valid_to);
+
+create index idx_host_net_assoc_ip_active
+  on host_net_assoc (ip_addr, valid_to);
+```
+
+#### 11.3.3 Rust Struct 草案
+
+```rust
+#[derive(Debug, Clone)]
+pub struct HostNetAssoc {
+    pub assoc_id: uuid::Uuid,
+    pub host_id: uuid::Uuid,
+    pub net_seg_id: uuid::Uuid,
+    pub interface_name: Option<String>,
+    pub ip_addr: std::net::IpAddr,
+    pub mac_addr: Option<String>,
+    pub is_primary: bool,
+    pub source: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### 11.4 `PodNetAssoc`
+
+#### 11.4.1 推荐最小字段集
+
+| 字段名 | 中文名 | 是否必需 | 说明 |
+| --- | --- | --- | --- |
+| `assoc_id` | 接入关系 ID | 必需 | 主键 |
+| `pod_id` | Pod ID | 必需 | 接入主体 |
+| `net_seg_id` | 网络段 ID | 必需 | 接入目标 |
+| `ip_addr` | IP 地址 | 建议必需 | Pod 地址归因常用 |
+| `interface_name` | 接口名 | 可选 | 多网卡场景才更重要 |
+| `mac_addr` | MAC 地址 | 可选 | CNI 不一定稳定提供 |
+| `is_primary` | 是否主接入 | 建议必需 | 多 attachment 时有用 |
+| `source` | 数据来源 | 必需 | 例如 `k8s_api`、`cni_sync` |
+| `valid_from` | 生效开始时间 | 必需 | 时态关系必需 |
+| `valid_to` | 生效结束时间 | 可选 | 当前有效时为空 |
+| `created_at` | 创建时间 | 必需 | 创建时间 |
+| `updated_at` | 更新时间 | 必需 | 更新时间 |
+
+建议第一版先固定：
+
+- `assoc_id`
+- `pod_id`
+- `net_seg_id`
+- `ip_addr`
+- `source`
+- `valid_from`
+- `created_at`
+- `updated_at`
+
+#### 11.4.2 SQL 草案
+
+```sql
+create table pod_net_assoc (
+  assoc_id uuid primary key,
+  pod_id uuid not null,
+  net_seg_id uuid not null references network_segment(net_seg_id),
+  interface_name text,
+  ip_addr inet not null,
+  mac_addr macaddr,
+  is_primary boolean not null default false,
+  source text not null,
+  valid_from timestamptz not null,
+  valid_to timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create index idx_pod_net_assoc_pod_active
+  on pod_net_assoc (pod_id, valid_to);
+
+create index idx_pod_net_assoc_seg_active
+  on pod_net_assoc (net_seg_id, valid_to);
+
+create index idx_pod_net_assoc_ip_active
+  on pod_net_assoc (ip_addr, valid_to);
+```
+
+#### 11.4.3 Rust Struct 草案
+
+```rust
+#[derive(Debug, Clone)]
+pub struct PodNetAssoc {
+    pub assoc_id: uuid::Uuid,
+    pub pod_id: uuid::Uuid,
+    pub net_seg_id: uuid::Uuid,
+    pub interface_name: Option<String>,
+    pub ip_addr: std::net::IpAddr,
+    pub mac_addr: Option<String>,
+    pub is_primary: bool,
+    pub source: String,
+    pub valid_from: chrono::DateTime<chrono::Utc>,
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### 11.5 本节约束
+
+本节只作为第一版最小对象落地草案，先不在这里固定：
+
+- `PodNetworkEvidence`
+- `HostNetworkEvidence`
+- `PodNetAssocCandidate`
+- `HostNetAssocCandidate`
+- 更复杂的唯一约束和排他约束
+
+这些内容可以等写路径、identity resolution 和 explain 需求进一步收敛后再补。
+
+---
+
+## 12. 第一版最小落地范围
 
 当前建议固定为：
 
@@ -1135,7 +1472,7 @@ PodInventory
 
 ---
 
-## 12. 当前建议
+## 13. 当前建议
 
 当前建议固定为：
 

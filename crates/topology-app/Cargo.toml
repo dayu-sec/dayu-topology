@@ -6,7 +6,11 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+chrono.workspace = true
+orion-error.workspace = true
+serde_json.workspace = true
 topology-api = { path = "../topology-api" }
 topology-domain = { path = "../topology-domain" }
 topology-storage = { path = "../topology-storage" }
 topology-sync = { path = "../topology-sync" }
+uuid.workspace = true

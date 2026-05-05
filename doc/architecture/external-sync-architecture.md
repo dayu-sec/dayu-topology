@@ -16,6 +16,7 @@
 - [`../glossary.md`](../glossary.md)
 - [`system-architecture.md`](./system-architecture.md)
 - [`dataflow-and-pipeline-architecture.md`](./dataflow-and-pipeline-architecture.md)
+- [`../external-integration/external-input-spec.md`](../external-integration/external-input-spec.md)
 - [`../model/host-responsibility-sync-from-external-systems.md`](../model/host-responsibility-sync-from-external-systems.md)
 - [`../model/public-vulnerability-source-ingestion.md`](../model/public-vulnerability-source-ingestion.md)
 

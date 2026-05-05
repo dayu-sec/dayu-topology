@@ -98,11 +98,14 @@ PodInventory {
 
 <!-- GLOSSARY_SYNC:START terms=ServiceInstance,ContainerRuntime,RuntimeBinding,RuntimeBindingEvidence -->
 | 术语 | 中文名 | English | 中文说明 |
-| --- | --- | --- | --- |
 | `ServiceInstance` | 服务运行实例 | Service runtime instance | 表示逻辑服务在运行时的短生命周期副本，是业务服务与运行对象之间的桥。 |
 | `ContainerRuntime` | 容器运行对象 | Container runtime object | 表示容器运行时对象，是比 Pod 更细一级的运行对象。 |
 | `RuntimeBinding` | 运行归属绑定 | Runtime binding relation | 表示进程、容器或 Pod 为什么归属于某个服务实例。 |
 | `RuntimeBindingEvidence` | 运行归属证据 | Runtime binding evidence | 表示支撑运行归属绑定结论的证据。 |
+
+
+
+
 <!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `ServiceInstance`
@@ -279,6 +282,22 @@ RuntimeBindingEvidence {
 
 - 绑定不是黑盒结果，应尽量保留可解释依据
 - 这样后续才能调试错误归属和误绑定问题
+
+---
+
+**图：运行绑定关系**
+
+```mermaid
+erDiagram
+  ServiceEntity ||--o{ ServiceInstance : instantiates
+  ServiceInstance ||--o{ RuntimeBinding : binds
+  RuntimeBinding }o--|| PodInventory : references
+  RuntimeBinding }o--|| ContainerRuntime : references
+  RuntimeBinding }o--|| ProcessRuntimeState : references
+  RuntimeBinding ||--o{ RuntimeBindingEvidence : supported-by
+```
+
+> `RuntimeBinding` 是运行对象（Pod/Container/Process）到 `ServiceInstance` 的归属桥。每条绑定携带 `scope`（declared/observed/inferred）、`confidence` 和 `evidence`。`ServiceInstance` 不直接等于 PID 或 Pod。
 
 ---
 

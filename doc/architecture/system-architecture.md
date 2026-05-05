@@ -16,6 +16,7 @@
 - [`../glossary.md`](../glossary.md)
 - [`project-charter.md`](./project-charter.md)
 - [`unified-model-overview.md`](./unified-model-overview.md)
+- [`error-handling-architecture.md`](./error-handling-architecture.md)
 - [`../model/unified-topology-schema.md`](../model/unified-topology-schema.md)
 
 ---

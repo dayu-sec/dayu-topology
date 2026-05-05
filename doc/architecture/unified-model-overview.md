@@ -13,6 +13,7 @@
 相关文档：
 
 - [`glossary.md`](../glossary.md)
+- [`scenario-and-scope-model.md`](./scenario-and-scope-model.md)
 - [`../model/host-inventory-and-runtime-state.md`](../model/host-inventory-and-runtime-state.md)
 - [`../model/host-pod-network-topology-model.md`](../model/host-pod-network-topology-model.md)
 - [`../model/business-system-service-topology-model.md`](../model/business-system-service-topology-model.md)
@@ -36,6 +37,12 @@
 - 上层回答“业务和系统如何组织”
 - 中层回答“资源和服务是什么”
 - 下层回答“它们现在跑在哪里、依赖谁、谁负责、受什么漏洞影响”
+
+同时需要明确：
+
+- 这是一套统一模型，不是按家庭/企业/多云等场景拆成多套模型
+- 不同场景通过不同的对象启用范围和能力范围来收敛复杂度
+- 具体场景分级见 [`scenario-and-scope-model.md`](./scenario-and-scope-model.md)
 
 ---
 
@@ -235,6 +242,32 @@ host-inventory-and-runtime-state
 - 责任与外部同步是一条横向责任治理主干
 - 它们分别挂接到资源和服务主线之上，而不是独立悬空存在
 
+**图 C：三条主干依赖关系**
+
+```mermaid
+flowchart TB
+  subgraph T1["资源与运行主干"]
+    direction TB
+    T1_A["host-inventory"] --> T1_B["network-topology"] --> T1_C["cluster-workload"] --> T1_D["runtime-binding"] --> T1_E["endpoint-observation"]
+  end
+  subgraph T2["业务与服务主干"]
+    direction TB
+    T2_A["business-service"] --> T2_B["cluster-workload"] --> T2_C["runtime-binding"] --> T2_D["endpoint-observation"]
+  end
+  subgraph T3["安全与治理主干"]
+    direction TB
+    T3_A["software-normalization"] --> T3_B["vuln-source"] --> T3_C["host-process-vuln"]
+    T3_D["host-inventory"] --> T3_E["responsibility"] --> T3_F["responsibility-sync"]
+  end
+
+  T1_C -.->|共享模型| T2_B
+  T3_C -.->|挂接到| T1_D
+  T3_C -.->|挂接到| T1_B
+  T3_E -.->|挂接到| T2_A
+```
+
+> 实线表示主干内的推进方向，虚线表示主干之间的挂接点。`cluster-workload` 是资源主干和业务主干的交汇点。
+
 ### 5.2 硬依赖关系
 
 以下依赖属于前置不成立、后续模型就难以稳定定义的硬依赖：
@@ -255,23 +288,114 @@ host-inventory-and-runtime-state
 - `business-system-service-topology` -> `host-responsibility-and-maintainer-model`
 - `endpoint-and-dependency-observation` -> 后续服务风险传播和故障影响分析视图
 
+**图 B：模型依赖关系**
+
+```mermaid
+flowchart TB
+  HOST["host-inventory<br>and-runtime-state"]
+  BIZ["business-system<br>service-topology"]
+  NET["host-pod<br>network-topology"]
+  CLUSTER["cluster-namespace<br>workload-topology"]
+  BINDING["runtime-binding"]
+  ENDPOINT["endpoint-and<br>dependency-observation"]
+  SW["software-normalization<br>and-vuln-enrichment"]
+  VULN_SRC["public-vulnerability<br>source-ingestion"]
+  VULN_GRAPH["host-process-software<br>vulnerability-graph"]
+  RESP["host-responsibility<br>and-maintainer-model"]
+  RESP_SYNC["host-responsibility<br>sync-from-external"]
+
+  HOST ==> NET
+  BIZ ==> CLUSTER
+  CLUSTER ==> BINDING
+  BINDING ==> ENDPOINT
+  SW ==> VULN_SRC
+  RESP ==> RESP_SYNC
+
+  NET -.-> VULN_GRAPH
+  BINDING -.-> VULN_GRAPH
+  BIZ -.-> RESP
+  ENDPOINT -.-> VULN_GRAPH
+```
+
+> 粗实线（==>）表示硬依赖 —— 前置模型不成立，后续模型难以稳定定义。虚线（-.->）表示集成依赖 —— 偏闭环能力和查询能力上的依赖。
+
 ### 5.4 实现顺序建议
 
-如果按依赖关系推进，较稳的顺序是：
+第一版建议按以下批次推进，与 [`development-plan.md`](../roadmap/development-plan.md) 的 Phase 划分保持一致：
 
-1. `host-inventory-and-runtime-state`
-2. `software-normalization-and-vuln-enrichment`
-3. `host-responsibility-and-maintainer-model`
-4. `business-system-service-topology`
-5. `host-pod-network-topology`
-6. `cluster-namespace-workload-topology`
-7. `runtime-binding`
-8. `public-vulnerability-source-ingestion`
-9. `endpoint-and-dependency-observation`
-10. `host-process-software-vulnerability-graph`
-11. `unified-topology-schema`
+**Phase A —— 核心目录与责任（并行）**
 
-这条顺序不是唯一正确答案，但它符合当前模型之间的依赖方向，返工最少。
+- `host-inventory-and-runtime-state`
+- `business-system-service-topology`
+- `host-responsibility-and-maintainer-model`
+
+说明：先让主机、业务/服务、责任主体等核心目录对象站稳，这是整张图谱的底座。
+
+**Phase B —— 编排与网络拓扑**
+
+- `host-pod-network-topology`
+- `cluster-namespace-workload-topology`
+
+说明：在核心目录基础上补充编排边界和网络拓扑关系。
+
+**Phase C —— 运行绑定与依赖观测**
+
+- `runtime-binding`
+- `endpoint-and-dependency-observation`
+
+说明：运行态归属和服务间依赖建立在稳定目录对象之上。
+
+**Phase D —— 软件安全与漏洞**
+
+- `software-normalization-and-vuln-enrichment`
+- `public-vulnerability-source-ingestion`
+- `host-process-software-vulnerability-graph`
+
+说明：软件归一和漏洞命中是横向安全治理能力，依赖核心目录和运行绑定完成后再接入。
+
+**Phase E —— 统一 Schema 收敛**
+
+- `unified-topology-schema`
+
+说明：在各批模型基本稳定后，做一次统一的 schema 对齐和整理。
+
+这条顺序符合当前模型之间的依赖方向，也与开发计划的 Phase 划分、schema 落表优先级一致。
+
+**图 A：模型构建阶段**
+
+```mermaid
+flowchart LR
+  subgraph PA["Phase A<br>核心目录与责任"]
+    direction TB
+    A1["host-inventory<br>and-runtime-state"]
+    A2["business-system<br>service-topology"]
+    A3["host-responsibility<br>and-maintainer-model"]
+  end
+  subgraph PB["Phase B<br>编排与网络拓扑"]
+    direction TB
+    B1["host-pod<br>network-topology"]
+    B2["cluster-namespace<br>workload-topology"]
+  end
+  subgraph PC["Phase C<br>运行绑定与依赖观测"]
+    direction TB
+    C1["runtime-binding"]
+    C2["endpoint-and<br>dependency-observation"]
+  end
+  subgraph PD["Phase D<br>软件安全与漏洞"]
+    direction TB
+    D1["software-normalization<br>and-vuln-enrichment"]
+    D2["public-vulnerability<br>source-ingestion"]
+    D3["host-process-software<br>vulnerability-graph"]
+  end
+  subgraph PE["Phase E<br>统一Schema收敛"]
+    direction TB
+    E1["unified-topology-schema"]
+  end
+
+  PA --> PB --> PC --> PD --> PE
+```
+
+> Phase A 的三个模型可并行推进。Phase B 起每批都依赖上一批的产出。
 
 ## 6. 关键边界
 

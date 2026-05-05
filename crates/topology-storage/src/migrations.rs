@@ -20,13 +20,13 @@ mod tests {
     #[test]
     fn initial_schema_contains_p0_tables() {
         for table in [
-            "business_domain",
-            "service_entity",
             "host_inventory",
-            "host_runtime_state",
+            "network_domain",
+            "network_segment",
+            "host_net_assoc",
+            "subject",
             "responsibility_assignment",
-            "external_identity_link",
-            "external_sync_cursor",
+            "ingest_job",
         ] {
             assert!(
                 INITIAL_SCHEMA_SQL.contains(table),

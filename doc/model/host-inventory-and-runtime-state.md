@@ -246,6 +246,19 @@ HostRuntimeAggregate {
 
 ---
 
+**图：主机目录与运行态 ER 关系**
+
+```mermaid
+erDiagram
+  HostInventory ||--o{ HostRuntimeState : has-runtime
+  HostInventory ||--o{ ProcessRuntimeState : runs
+  HostInventory ||--o{ ContainerRuntime : runs
+```
+
+> `HostInventory` 是慢变化目录对象，`HostRuntimeState` 是快变化状态快照。两者通过 `host_id` 关联，分库存储。`ProcessRuntimeState` 和 `ContainerRuntime` 是进一步细化的运行对象。
+
+---
+
 ## 6. 更新策略
 
 ### 6.1 inventory 更新

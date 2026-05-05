@@ -99,6 +99,8 @@ dayu-topology-server
 - 规模尚早
 - 先追求模型闭环和实现速度
 
+> **与统一 ingest 逻辑模型的关系**：形态 A 的单体进程中，[dataflow doc](./dataflow-and-pipeline-architecture.md) 描述的 Intake Consumer、Resolver Worker、Materializer 等角色以进程内异步任务形式运行，而非独立服务。单体阶段的输入可以来自文件导入、数据库 job table、进程内 channel，或外部 message queue。protocol registry 和 partition_key 设计在第一版可暂不落地完整版本。当演进到形态 B/C 时，这些内部角色才逐步拆分为独立 worker/sync 进程。
+
 ### 4.2 形态 B：单体 + 异步 worker
 
 ```text

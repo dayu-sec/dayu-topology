@@ -93,13 +93,16 @@ PodInventory {
 
 <!-- GLOSSARY_SYNC:START terms=ClusterInventory,NamespaceInventory,WorkloadEntity,PodInventory,WorkloadPodMembership,ServiceWorkloadBinding -->
 | 术语 | 中文名 | English | 中文说明 |
-| --- | --- | --- | --- |
 | `ClusterInventory` | 集群目录对象 | Cluster inventory object | 表示集群级目录对象，是运行环境边界。 |
 | `NamespaceInventory` | 命名空间目录对象 | Namespace inventory object | 表示集群内命名空间边界，是隔离和治理边界。 |
 | `WorkloadEntity` | 工作负载对象 | Workload entity object | 表示部署工作负载对象，是 `service` 与 `pod` 之间的桥接层。 |
 | `PodInventory` | Pod 目录对象 | Pod inventory object | 表示稳定的 Pod 目录对象，是实际运行副本，不是服务定义。 |
 | `WorkloadPodMembership` | 工作负载成员关系 | Workload pod membership relation | 表示某个 Pod 属于哪个 Workload，并保留时间段语义。 |
 | `ServiceWorkloadBinding` | 服务与工作负载绑定 | Service workload binding relation | 表示逻辑服务与部署工作负载之间的绑定关系。 |
+
+
+
+
 <!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `ClusterInventory`
@@ -350,7 +353,23 @@ ServiceResourceSetBinding {
 说明：
 
 - 这层表达“业务需要什么资源”
-- 它不等于“某个资源当前实际归属到哪里”
+- 它不等于”某个资源当前实际归属到哪里”
+
+---
+
+**图：集群编排 ER 关系**
+
+```mermaid
+erDiagram
+  ClusterInventory ||--o{ NamespaceInventory : contains
+  NamespaceInventory ||--o{ WorkloadEntity : contains
+  WorkloadEntity ||--o{ WorkloadPodMembership : manages
+  PodInventory ||--o{ WorkloadPodMembership : belongs-to
+  WorkloadEntity ||--o{ ServiceWorkloadBinding : bound-to
+  ServiceEntity ||--o{ ServiceWorkloadBinding : bound-to
+```
+
+> `ClusterInventory` → `NamespaceInventory` → `WorkloadEntity` 是编排边界链路。`WorkloadPodMembership` 表达 Pod 与 Workload 的动态归属。`ServiceWorkloadBinding` 是逻辑服务与部署工作负载之间的桥。
 
 ---
 

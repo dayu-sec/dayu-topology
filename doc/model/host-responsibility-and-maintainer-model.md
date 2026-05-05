@@ -258,6 +258,23 @@ ResponsibilityAssignment {
 
 ---
 
+**图：责任治理 ER 关系**
+
+```mermaid
+erDiagram
+  Subject ||--o{ ResponsibilityAssignment : assigned-to
+  HostInventory ||--o{ ResponsibilityAssignment : target
+  ServiceEntity ||--o{ ResponsibilityAssignment : target
+  HostGroup ||--o{ HostGroupMembership : contains
+  HostInventory ||--o{ HostGroupMembership : member-of
+  HostGroup ||--o{ ResponsibilityAssignment : target
+  Subject ||--o{ ExternalIdentityLink : linked-to
+```
+
+> `ResponsibilityAssignment` 是核心关系对象，支持 `host` 级和 `host_group` 级分配，角色包括 `owner`、`maintainer`、`oncall`、`security_owner` 等。`ExternalIdentityLink` 关联外部系统身份。
+
+---
+
 ## 6. 继承与覆盖规则
 
 责任关系建议采用以下优先级：

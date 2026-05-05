@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{EnvironmentId, TenantId};
+use crate::{EnvironmentId, TenantId, ValidityWindow};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ServiceBoundary {
@@ -36,6 +36,23 @@ pub enum SubjectType {
     Team,
     Rotation,
     ServiceAccount,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum NetworkDomainKind {
+    Lan,
+    Wan,
+    Vpc,
+    Vnet,
+    Vlan,
+    Overlay,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum AddressFamily {
+    Ipv4,
+    Ipv6,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,6 +163,45 @@ pub struct HostInventory {
     pub os_version: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_inventory_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkDomain {
+    pub network_domain_id: Uuid,
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub name: String,
+    pub kind: NetworkDomainKind,
+    pub description: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkSegment {
+    pub network_segment_id: Uuid,
+    pub tenant_id: TenantId,
+    pub network_domain_id: Option<Uuid>,
+    pub environment_id: Option<EnvironmentId>,
+    pub name: String,
+    pub cidr: Option<String>,
+    pub gateway_ip: Option<String>,
+    pub address_family: AddressFamily,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostNetAssoc {
+    pub assoc_id: Uuid,
+    pub tenant_id: TenantId,
+    pub host_id: Uuid,
+    pub network_segment_id: Uuid,
+    pub ip_addr: String,
+    pub iface_name: Option<String>,
+    pub validity: ValidityWindow,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1,25 +1,21 @@
 # Bootstrap Plan
 
-## Phase 0
+本文档已降级为归档说明，不再作为当前执行计划来源。
 
-- 初始化 repo 结构
-- 固定项目 Charter
-- 归档第一批模型文档
+原因：
 
-## Phase 1
+- `development-plan.md` 已承担阶段目标、范围和里程碑定义
+- `execution-plan.md` 已承担工作包拆分与验收标准
+- `todo-backlog.md` 已承担实际跟踪与状态维护
 
-- 收敛统一 PostgreSQL schema 草案
-- 定义核心 ingest / sync / query 边界
-- 固定对象主键、关系键与有效期语义
+当前约束：
 
-## Phase 2
+- 不再维护独立的 bootstrap phase
+- 如需调整计划，只更新 `development-plan.md` 与 `todo-backlog.md`
+- 本文档仅保留，避免历史链接失效
 
-- 实现最小 metadata service
-- 实现外部同步 worker
-- 提供基础查询接口
+当前主入口：
 
-## Phase 3
-
-- 增加派生视图与聚合能力
-- 增加责任、漏洞、依赖的联合查询
-- 为控制中心与分析系统提供稳定接口
+- [`development-plan.md`](./development-plan.md)
+- [`execution-plan.md`](./execution-plan.md)
+- [`todo-backlog.md`](./todo-backlog.md)

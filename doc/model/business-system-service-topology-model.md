@@ -117,7 +117,6 @@ Service {
 
 <!-- GLOSSARY_SYNC:START terms=BusinessDomain,SystemBoundary,Subsystem,ServiceEntity,ServiceInstance,SvcEp,InstEp,DepEdge -->
 | 术语 | 中文名 | English | 中文说明 |
-| --- | --- | --- | --- |
 | `BusinessDomain` | 业务域对象 | Business domain object | 表示较高层业务边界，下挂多个系统、服务和运行对象。 |
 | `SystemBoundary` | 系统边界对象 | System boundary object | 表示业务内部的系统边界，是服务编组和治理边界之一。 |
 | `Subsystem` | 子系统对象 | Subsystem object | 表示系统内部更细一级的逻辑边界。 |
@@ -126,6 +125,10 @@ Service {
 | `SvcEp` | 服务稳定入口 | Service endpoint | 表示服务的稳定访问入口，例如 DNS、VIP、Ingress。 |
 | `InstEp` | 实例运行地址 | Instance endpoint | 表示实例当前运行地址，例如 Pod IP:Port 或 Host IP:Port。 |
 | `DepEdge` | 服务依赖边 | Dependency edge | 表示服务依赖图中的一条边，不直接承载原始观测明细。 |
+
+
+
+
 <!-- GLOSSARY_SYNC:END -->
 
 ### 5.1 `BusinessDomain`
@@ -607,6 +610,24 @@ DepEdge {
 - 这两类依赖不能混成一条
 - 调用样本、trace、flow、日志证据应放到 `DepObs` 和 `DepEv`
 - 从流量或日志推导依赖边时，应先生成观测与证据，再聚合生成或刷新 `DepEdge`
+
+---
+
+**图：业务架构层 ER 关系**
+
+```mermaid
+erDiagram
+  BusinessDomain ||--o{ SystemBoundary : contains
+  SystemBoundary ||--o{ Subsystem : contains
+  SystemBoundary ||--o{ ServiceEntity : contains
+  ServiceEntity ||--o{ ServiceInstance : instantiates
+  ServiceEntity ||--o{ SvcEp : exposes
+  ServiceInstance ||--o{ InstEp : runs-on
+  ServiceEntity ||--o{ DepEdge : source
+  ServiceEntity ||--o{ DepEdge : target
+```
+
+> `BusinessDomain` → `SystemBoundary` → `ServiceEntity` 是逻辑归属链路。`ServiceInstance` 是运行态锚点。`SvcEp` 和 `InstEp` 分别表达服务入口地址和实例地址。`DepEdge` 表达服务间逻辑依赖。
 
 ---
 

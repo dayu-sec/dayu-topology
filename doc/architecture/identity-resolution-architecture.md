@@ -15,7 +15,7 @@
 
 - [`../glossary.md`](../glossary.md)
 - [`system-architecture.md`](./system-architecture.md)
-- [`ingest-and-normalization-architecture.md`](./ingest-and-normalization-architecture.md)
+- [`dataflow-and-pipeline-architecture.md`](./dataflow-and-pipeline-architecture.md)
 - [`external-sync-architecture.md`](./external-sync-architecture.md)
 - [`../model/host-responsibility-sync-from-external-systems.md`](../model/host-responsibility-sync-from-external-systems.md)
 

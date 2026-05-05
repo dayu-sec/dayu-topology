@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-thiserror.workspace = true
+chrono.workspace = true
+orion-error.workspace = true
 topology-domain = { path = "../topology-domain" }
 uuid.workspace = true
