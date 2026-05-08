@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use orion_error::prelude::*;
 use topology_domain::{
     HostInventory, HostNetAssoc, NetworkDomain, NetworkSegment, ObjectKind,
     ResponsibilityAssignment, Subject, TenantId,
@@ -6,8 +7,8 @@ use topology_domain::{
 use uuid::Uuid;
 
 use crate::{
-    CatalogStore, GovernanceStore, IngestStore, Page, RuntimeStore, StorageResult,
-    memory::IngestJobEntry, migrations::MIGRATIONS, not_configured, operation_failed,
+    CatalogStore, GovernanceStore, IngestStore, Page, RuntimeStore, StorageReason, StorageResult,
+    decode_failed, lock_failed, memory::IngestJobEntry, migrations::MIGRATIONS, not_configured,
 };
 
 pub mod sql {
@@ -730,7 +731,7 @@ impl PostgresExecutor for RecordingExecutor {
     fn exec(&self, sql: &str, params: &[String]) -> StorageResult<u64> {
         self.calls
             .lock()
-            .map_err(|err| operation_failed(err.to_string()))?
+            .map_err(|_| lock_failed())?
             .push((sql.to_string(), params.to_vec()));
         Ok(1)
     }
@@ -738,7 +739,7 @@ impl PostgresExecutor for RecordingExecutor {
     fn query_rows(&self, sql: &str, params: &[String]) -> StorageResult<Vec<Vec<String>>> {
         self.calls
             .lock()
-            .map_err(|err| operation_failed(err.to_string()))?
+            .map_err(|_| lock_failed())?
             .push((sql.to_string(), params.to_vec()));
         Ok(Vec::new())
     }
@@ -746,10 +747,7 @@ impl PostgresExecutor for RecordingExecutor {
 
 impl PostgresExecutor for MemoryPostgresExecutor {
     fn exec(&self, sql: &str, params: &[String]) -> StorageResult<u64> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|err| operation_failed(err.to_string()))?;
+        let mut state = self.state.lock().map_err(|_| lock_failed())?;
 
         match sql {
             value if value == sql::UPSERT_HOST => {
@@ -788,10 +786,7 @@ impl PostgresExecutor for MemoryPostgresExecutor {
     }
 
     fn query_rows(&self, sql: &str, params: &[String]) -> StorageResult<Vec<Vec<String>>> {
-        let state = self
-            .state
-            .lock()
-            .map_err(|err| operation_failed(err.to_string()))?;
+        let state = self.state.lock().map_err(|_| lock_failed())?;
 
         let rows = match sql {
             value if value == sql::GET_HOST => {
@@ -975,7 +970,7 @@ fn decode_ingest_job(row: &[String]) -> StorageResult<IngestJobEntry> {
 }
 
 fn parse_uuid(value: &str) -> StorageResult<Uuid> {
-    Uuid::parse_str(value).map_err(|err| operation_failed(err.to_string()))
+    Uuid::parse_str(value).source_raw_err(StorageReason::DecodeFailed, "parse uuid")
 }
 
 fn parse_optional_uuid(value: &str) -> StorageResult<Option<Uuid>> {
@@ -989,7 +984,7 @@ fn parse_optional_uuid(value: &str) -> StorageResult<Option<Uuid>> {
 fn parse_datetime(value: &str) -> StorageResult<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))
-        .map_err(|err| operation_failed(err.to_string()))
+        .source_raw_err(StorageReason::DecodeFailed, "parse rfc3339 datetime")
 }
 
 fn empty_to_none(value: &str) -> Option<String> {
@@ -1009,7 +1004,7 @@ fn parse_network_domain_kind(value: &str) -> StorageResult<topology_domain::Netw
         "Vlan" => Ok(topology_domain::NetworkDomainKind::Vlan),
         "Overlay" => Ok(topology_domain::NetworkDomainKind::Overlay),
         "Unknown" => Ok(topology_domain::NetworkDomainKind::Unknown),
-        other => Err(operation_failed(format!(
+        other => Err(decode_failed(format!(
             "unsupported network domain kind: {other}"
         ))),
     }
@@ -1019,7 +1014,7 @@ fn parse_address_family(value: &str) -> StorageResult<topology_domain::AddressFa
     match value {
         "Ipv4" => Ok(topology_domain::AddressFamily::Ipv4),
         "Ipv6" => Ok(topology_domain::AddressFamily::Ipv6),
-        other => Err(operation_failed(format!(
+        other => Err(decode_failed(format!(
             "unsupported address family: {other}"
         ))),
     }
@@ -1031,9 +1026,7 @@ fn parse_subject_type(value: &str) -> StorageResult<topology_domain::SubjectType
         "Team" => Ok(topology_domain::SubjectType::Team),
         "Rotation" => Ok(topology_domain::SubjectType::Rotation),
         "ServiceAccount" => Ok(topology_domain::SubjectType::ServiceAccount),
-        other => Err(operation_failed(format!(
-            "unsupported subject type: {other}"
-        ))),
+        other => Err(decode_failed(format!("unsupported subject type: {other}"))),
     }
 }
 
@@ -1042,9 +1035,7 @@ fn parse_object_kind(value: &str) -> StorageResult<ObjectKind> {
         "Host" => Ok(ObjectKind::Host),
         "NetworkSegment" => Ok(ObjectKind::NetworkSegment),
         "Subject" => Ok(ObjectKind::Subject),
-        other => Err(operation_failed(format!(
-            "unsupported object kind: {other}"
-        ))),
+        other => Err(decode_failed(format!("unsupported object kind: {other}"))),
     }
 }
 
@@ -1054,7 +1045,7 @@ fn parse_responsibility_role(value: &str) -> StorageResult<topology_domain::Resp
         "Maintainer" => Ok(topology_domain::ResponsibilityRole::Maintainer),
         "Oncall" => Ok(topology_domain::ResponsibilityRole::Oncall),
         "Security" => Ok(topology_domain::ResponsibilityRole::Security),
-        other => Err(operation_failed(format!(
+        other => Err(decode_failed(format!(
             "unsupported responsibility role: {other}"
         ))),
     }

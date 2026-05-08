@@ -13,7 +13,7 @@ use topology_domain::{
 
 use crate::error::{
     ApiResult, invalid_field_type, invalid_field_value, missing_field, missing_payload,
-    payload_must_be_object, recorder_failed, unsupported_ingest_mode,
+    payload_must_be_object, recorder_unavailable, unsupported_ingest_mode,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -63,7 +63,7 @@ impl InMemoryIngestJobRecorder {
         self.records
             .lock()
             .map(|records| records.clone())
-            .map_err(|err| recorder_failed(err.to_string()))
+            .map_err(|_| recorder_unavailable())
     }
 }
 
@@ -71,7 +71,7 @@ impl IngestJobRecorder for InMemoryIngestJobRecorder {
     fn record_ingest_job(&self, record: IngestJobRecord) -> ApiResult<()> {
         self.records
             .lock()
-            .map_err(|err| recorder_failed(err.to_string()))?
+            .map_err(|_| recorder_unavailable())?
             .push(record);
         Ok(())
     }

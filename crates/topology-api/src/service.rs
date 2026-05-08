@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use orion_error::conversion::ConvErr;
+use orion_error::{conversion::ConvErr, prelude::SourceErr};
 use serde::{Deserialize, Serialize};
 use topology_domain::{
     DayuInputEnvelope, HostCandidate, IngestEnvelope, NetworkSegmentCandidate,
@@ -11,7 +11,7 @@ use topology_storage::{
 };
 use uuid::Uuid;
 
-use crate::error::{ApiResult, missing_payload, recorder_failed, unsupported_ingest_mode};
+use crate::error::{ApiReason, ApiResult, missing_payload, unsupported_ingest_mode};
 use crate::ingest::{
     IngestJobRecord, IngestJobStatus, extract_host_candidates, extract_network_segment_candidates,
     extract_responsibility_assignment_candidates, extract_subject_candidates,
@@ -129,7 +129,7 @@ where
             payload_ref: record.payload_ref.clone(),
             error: None,
         })
-        .map_err(|err| recorder_failed(err.to_string()))?;
+        .source_err(ApiReason::IngestRejected, "record ingest job")?;
 
     Ok(record)
 }

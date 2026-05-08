@@ -1,6 +1,10 @@
+pub mod error;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub use error::{SyncError, SyncReason, SyncResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExternalIdentityLink {

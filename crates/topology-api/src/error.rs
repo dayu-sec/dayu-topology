@@ -1,4 +1,4 @@
-use orion_error::{conversion::ToStructError, prelude::*};
+use orion_error::{conversion::ToStructError, prelude::*, runtime::OperationContext};
 use topology_domain::DomainReason;
 use topology_storage::StorageReason;
 
@@ -47,6 +47,7 @@ impl From<StorageReason> for ApiReason {
             StorageReason::NotConfigured | StorageReason::OperationFailed => {
                 ApiReason::IngestRejected
             }
+            StorageReason::DecodeFailed => ApiReason::IngestRejected,
             StorageReason::NotFound => ApiReason::QueryInvalid,
             StorageReason::General(reason) => ApiReason::General(reason),
         }
@@ -73,21 +74,49 @@ pub fn missing_field(field: &'static str) -> ApiError {
     ApiReason::FieldMissing
         .to_err()
         .with_detail(format!("payload field `{field}` is required"))
+        .with_context(
+            OperationContext::doing("validate payload field")
+                .with_meta("field_path", field)
+                .with_meta("component.name", "topology-api"),
+        )
 }
 
 pub fn invalid_field_type(field: &'static str) -> ApiError {
     ApiReason::FieldInvalid
         .to_err()
         .with_detail(format!("payload field `{field}` has invalid type"))
+        .with_context(
+            OperationContext::doing("validate payload field type")
+                .with_meta("field_path", field)
+                .with_meta("component.name", "topology-api"),
+        )
 }
 
 pub fn invalid_field_value(field: &'static str, value: impl Into<String>) -> ApiError {
-    ApiReason::FieldInvalid.to_err().with_detail(format!(
-        "payload field `{field}` has invalid value `{}`",
-        value.into()
-    ))
+    let value = value.into();
+    ApiReason::FieldInvalid
+        .to_err()
+        .with_detail(format!(
+            "payload field `{field}` has invalid value `{}`",
+            value
+        ))
+        .with_context(
+            OperationContext::doing("validate payload field value")
+                .with_meta("field_path", field)
+                .with_meta("component.name", "topology-api"),
+        )
 }
 
 pub fn recorder_failed(detail: impl Into<String>) -> ApiError {
-    ApiReason::IngestRejected.to_err().with_detail(detail)
+    ApiReason::IngestRejected
+        .to_err()
+        .with_detail(detail)
+        .with_context(
+            OperationContext::doing("record ingest job")
+                .with_meta("component.name", "topology-api"),
+        )
+}
+
+pub fn recorder_unavailable() -> ApiError {
+    recorder_failed("ingest job recorder is unavailable")
 }

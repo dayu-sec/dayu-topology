@@ -8,8 +8,7 @@ use topology_domain::{
 use uuid::Uuid;
 
 use crate::{
-    CatalogStore, GovernanceStore, Page, RuntimeStore, StorageResult, not_configured,
-    operation_failed,
+    CatalogStore, GovernanceStore, Page, RuntimeStore, StorageResult, lock_failed, not_configured,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,10 +46,7 @@ pub struct InMemoryTopologyStore {
 
 impl InMemoryTopologyStore {
     fn with_state<T>(&self, f: impl FnOnce(&mut MemoryState) -> T) -> StorageResult<T> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|err| operation_failed(err.to_string()))?;
+        let mut state = self.state.lock().map_err(|_| lock_failed())?;
         Ok(f(&mut state))
     }
 }

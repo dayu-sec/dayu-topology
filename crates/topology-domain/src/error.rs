@@ -125,10 +125,13 @@ pub fn protocol_code(identity_code: &str) -> &'static str {
         "conf.dayu.storage.not_configured" => "system.dependency_unavailable",
         "biz.dayu.storage.not_found" => "query.not_found",
         "sys.dayu.storage.operation_failed" => "persist.transaction_failed",
+        "logic.dayu.storage.decode_failed" => "persist.decode_failed",
         "biz.dayu.app.invalid_args" => "input.envelope_invalid",
         "sys.dayu.app.input_load_failed" => "input.raw_parse_failed",
         "logic.dayu.app.materialization_missing" => "system.internal",
         "sys.dayu.sync.fetch_failed" => "sync.fetch_failed",
+        "biz.dayu.sync.cursor_conflict" => "sync.cursor_conflict",
+        "sys.dayu.sync.rate_limited" => "sync.rate_limited",
         _ => "system.internal",
     }
 }
@@ -213,7 +216,7 @@ where
         message: identity.reason,
         request_id: None,
         ingest_id: None,
-        fields: Vec::new(),
+        fields: context_fields(error),
         retryable: decision.retryable,
     }
 }
@@ -230,7 +233,21 @@ where
         action: decision.action,
         message: identity.detail.or(Some(identity.reason)),
         row_ref: None,
-        field_path: None,
+        field_path: context_meta(error, "field_path"),
         raw_ref: None,
     }
+}
+
+fn context_fields<R>(error: &StructError<R>) -> Vec<String>
+where
+    R: orion_error::reason::DomainReason + ErrorIdentityProvider,
+{
+    context_meta(error, "field_path").into_iter().collect()
+}
+
+fn context_meta<R>(error: &StructError<R>, key: &str) -> Option<String>
+where
+    R: orion_error::reason::DomainReason + ErrorIdentityProvider,
+{
+    error.context_metadata().get(key).map(ToString::to_string)
 }

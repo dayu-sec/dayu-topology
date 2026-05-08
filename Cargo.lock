@@ -452,6 +452,7 @@ name = "topology-sync"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "orion-error",
  "serde",
  "topology-domain",
  "topology-storage",

@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 chrono.workspace = true
+orion-error.workspace = true
 serde.workspace = true
 uuid.workspace = true
 topology-domain = { path = "../topology-domain" }
