@@ -881,6 +881,53 @@ raw input (queue / file / batch)
 - BUG 影响面
 - 责任归属视图
 
+### 9.9 证据到结论的规则计算引擎
+
+第一版建议引入 `wp-reactor v0.1.4` 作为 evidence / observation 到 conclusion 的规则计算支撑。
+
+定位：
+
+- `wp-reactor` 是 CEP / window / rule engine，用于在时间窗口内聚合事件、评估规则、生成候选结论。
+- 它不负责 `dayu-topology` 的中心主键、对象归并、关系落库或 source-of-truth 决策。
+- 它的输出应进入 candidate / observation / finding / factor 层，再由 `dayu-topology` resolver / materializer 决定是否写入正式对象或关系。
+- 这里的使用目标是“计算支持”，不是把 `wp-reactor` 变成 dayu 的模型仓库或 resolver 替代品。
+
+适用场景：
+
+- 从多条 `DepEv` 聚合出 `DepObs`，例如一段时间内服务 A 到服务 B 的访问强度、错误率和稳定性。
+- 从 `BugEv` / 错误日志观测生成 `BugObs` 或候选 `SoftwareBugFinding`。
+- 从漏洞命中、软件证据、运行态暴露面和业务归属生成风险因子候选。
+- 从多类 runtime metrics / alert / dependency observation 生成 `BusinessHealthFactor` 候选。
+- 为 explain 视图记录“哪条规则、哪个窗口、哪些证据摘要支持了该结论”。
+
+输入边界：
+
+- 输入必须是 dayu 已归一的 evidence / observation / runtime snapshot / finding candidate。
+- 原始 payload、连接串、token、完整日志正文不直接送入规则引擎；只能传摘要、引用和脱敏字段。
+- 规则输入应带 `tenant_id`、`source`、`observed_at`、`evidence_ref`、`confidence` 等可追溯字段。
+- 未完成 identity resolution 的对象只能以 unresolved candidate 参与低置信推断，不能直接生成正式关系。
+
+输出边界：
+
+- `wp-reactor` 输出的是 rule hit / derived candidate / observation aggregate / factor candidate。
+- 输出必须携带规则 ID、窗口、输入 evidence refs、score / confidence、生成时间和版本信息。
+- 输出不得直接写 `DepEdge`、`BusinessHealthFactor`、`SoftwareBug` 等最终 source-of-truth 对象。
+- materializer 只消费稳定结构化输出，不解析规则引擎的 display 文本。
+
+错误处理边界：
+
+- `wp-reactor v0.1.4` 已按 `orion-error 0.8.1` 方向治理，dayu 集成层应把其错误作为结构化 source 处理。
+- 若只是跨 crate reason 类型转换，使用 `conv_err()`。
+- 若 dayu 要建立新的语义边界，例如“规则计算失败导致派生视图不可用”，使用 `source_err(...)` 保留下层 source chain。
+- connector 生态中可能存在 `anyhow` 或旧版 `orion-error` 传递依赖，不能让这些错误类型穿透 dayu 热路径。
+
+治理规则：
+
+- 规则 ID、规则版本和输入 evidence refs 是 explain 的稳定依据，不能使用错误 detail 或日志文本作为决策依据。
+- 规则计算失败不得回滚 source-of-truth 写入；失败进入 derive retry / alert / explain rebuild 队列。
+- 规则命中不等于最终事实。它只是候选结论，需要经过 dayu 的 resolver、置信度策略和冲突策略。
+- 对安全、漏洞、业务健康类结论，必须保留从 evidence 到 rule hit 到 final conclusion 的链路。
+
 ---
 
 ## 10. 典型输入处理样例

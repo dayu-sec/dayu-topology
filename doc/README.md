@@ -27,7 +27,7 @@
 4. [architecture/visual-architecture-guide.md](./architecture/visual-architecture-guide.md)
 5. [architecture/storage-architecture.md](./architecture/storage-architecture.md)
 6. [architecture/service-and-deployment-architecture.md](./architecture/service-and-deployment-architecture.md)
-7. [architecture/dataflow-and-pipeline-architecture.md](./architecture/dataflow-and-pipeline-architecture.md)
+7. [architecture/dataflow-and-pipeline-architecture.md](./architecture/dataflow-and-pipeline-architecture.md)（包含 `wp-reactor` 规则计算引擎边界）
 8. [external-integration/README.md](./external-integration/README.md)
 9. [external-integration/input-taxonomy-and-style.md](./external-integration/input-taxonomy-and-style.md)
 10. [external-integration/external-input-spec.md](./external-integration/external-input-spec.md)

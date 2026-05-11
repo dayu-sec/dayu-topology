@@ -198,10 +198,41 @@ candidate
 不建议：
 
 - 每个 connector 各自实现一套 identity 规则
+- 用 `wp-reactor` 这类规则计算引擎替代中心 identity resolver
 
 ---
 
-## 8. 数据结构建议
+## 8. 与规则计算引擎的关系
+
+`wp-reactor v0.1.4` 可用于支持 evidence / observation 到候选结论的计算，但不负责最终 identity resolution。
+
+边界固定为：
+
+- `wp-reactor` 可以计算候选匹配信号、窗口聚合、规则命中、风险因子候选。
+- identity resolver 负责把候选信号裁决为内部稳定对象，或将冲突放入 unresolved / review queue。
+- 强标识、组合标识、弱标识的优先级和冲突策略仍由 `dayu-topology` 管理。
+- `wp-reactor` 输出必须保留 rule id、window、input evidence refs、score / confidence，作为 explain 输入。
+- 规则命中不能直接创建或合并 `host`、`service`、`subject`、`software` 等中心主对象。
+
+典型用法：
+
+```text
+candidate / evidence / observation
+  -> wp-reactor rule/window evaluation
+  -> scored match signal / rule hit
+  -> identity resolver
+  -> internal identity assignment or unresolved
+```
+
+错误处理要求：
+
+- `wp-reactor` 错误进入 dayu 集成层时必须保持结构化 source chain。
+- 纯 reason 转换使用 `conv_err()`；建立 dayu 语义边界时使用 `source_err(...)`。
+- 不允许 `anyhow::Error`、裸 `io::Error` 或字符串错误穿透 identity resolution 热路径。
+
+---
+
+## 9. 数据结构建议
 
 第一版建议围绕以下对象落地：
 
@@ -217,7 +248,7 @@ candidate
 
 ---
 
-## 9. Explain 能力要求
+## 10. Explain 能力要求
 
 identity resolution 必须支持 explain。
 
@@ -230,10 +261,11 @@ identity resolution 必须支持 explain。
 
 ---
 
-## 10. 当前建议
+## 11. 当前建议
 
 当前建议固定为：
 
 - identity resolution 是 `dayu-topology` 的核心语义能力
 - 不允许分散在各数据源私有实现里
 - 所有关键对象都应先经过 resolution，再进入主对象模型
+- `wp-reactor` 只作为规则计算和候选信号生成组件，不替代 resolver / materializer
