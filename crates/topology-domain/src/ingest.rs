@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -39,7 +39,9 @@ pub struct DayuInputEnvelope {
 pub struct DayuInputSource {
     pub system: String,
     pub producer: String,
+    #[serde(alias = "tenant_ref")]
     pub tenant: String,
+    #[serde(alias = "env_ref")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<String>,
 }
@@ -55,7 +57,11 @@ pub struct DayuInputCollect {
     pub collected_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_string_like",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub res_ver: Option<String>,
 }
 
@@ -320,6 +326,30 @@ fn missing_field(_field: &'static str, detail: impl Into<String>) -> DomainError
     DomainReason::FieldMissing.to_err().with_detail(detail)
 }
 
+fn deserialize_optional_string_like<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringLike {
+        String(String),
+        Integer(i64),
+        Unsigned(u64),
+        Float(f64),
+        Bool(bool),
+    }
+
+    let value = Option::<StringLike>::deserialize(deserializer)?;
+    Ok(value.map(|value| match value {
+        StringLike::String(value) => value,
+        StringLike::Integer(value) => value.to_string(),
+        StringLike::Unsigned(value) => value.to_string(),
+        StringLike::Float(value) => value.to_string(),
+        StringLike::Bool(value) => value.to_string(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -413,6 +443,40 @@ mod tests {
             Some("dayu.in.edge.v1:warp-insight:agent-01:demo:prod:snap-001")
         );
     }
+
+    #[test]
+    fn dayu_input_accepts_short_source_aliases_and_numeric_res_ver() {
+        let input: DayuInputEnvelope = serde_json::from_value(json!({
+            "schema": "dayu.in.edge.v1",
+            "source": {
+                "kind": "edge",
+                "system": "warp-insight",
+                "producer": "agent-local-01",
+                "tenant_ref": "tenant-demo",
+                "env_ref": "office"
+            },
+            "collect": {
+                "mode": "snapshot",
+                "snap_id": "edge-snap-local-01",
+                "observed_at": "2026-05-12T03:16:04Z",
+                "collected_at": "2026-05-12T03:16:05Z",
+                "res_ver": 4
+            },
+            "payload": {
+                "host_name": "local-host"
+            }
+        }))
+        .unwrap();
+
+        input.validate().unwrap();
+        assert_eq!(input.source.tenant, "tenant-demo");
+        assert_eq!(input.source.env.as_deref(), Some("office"));
+        assert_eq!(input.collect.res_ver.as_deref(), Some("4"));
+        assert_eq!(
+            input.idempotency_key(),
+            "dayu.in.edge.v1:warp-insight:agent-local-01:tenant-demo:office:edge-snap-local-01"
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -463,6 +527,22 @@ pub struct HostCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessRuntimeCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    pub host_name: Option<String>,
+    pub machine_id: Option<String>,
+    pub pid: i32,
+    pub executable: String,
+    pub command_line: Option<String>,
+    pub identity: Option<String>,
+    pub service_ref: Option<String>,
+    pub instance_key: Option<String>,
+    pub observed_at: Option<ObservedAt>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkSegmentCandidate {
     pub tenant_id: TenantId,
     pub environment_id: Option<EnvironmentId>,
@@ -474,6 +554,34 @@ pub struct NetworkSegmentCandidate {
     pub host_name: Option<String>,
     pub machine_id: Option<String>,
     pub iface_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HostTelemetryCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    pub host_name: Option<String>,
+    pub machine_id: Option<String>,
+    pub observed_at: ObservedAt,
+    pub metric_name: String,
+    pub value_i64: Option<i64>,
+    pub value_f64: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProcessTelemetryCandidate {
+    pub tenant_id: TenantId,
+    pub environment_id: Option<EnvironmentId>,
+    pub source_kind: SourceKind,
+    pub host_name: Option<String>,
+    pub machine_id: Option<String>,
+    pub process_ref: String,
+    pub pid: i32,
+    pub observed_at: ObservedAt,
+    pub metric_name: String,
+    pub value_i64: Option<i64>,
+    pub value_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

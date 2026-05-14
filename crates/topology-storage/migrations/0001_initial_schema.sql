@@ -243,6 +243,28 @@ CREATE TABLE IF NOT EXISTS host_runtime_state (
     PRIMARY KEY (host_id, observed_at)
 );
 
+CREATE TABLE IF NOT EXISTS process_runtime_state (
+    process_id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    host_id UUID NOT NULL REFERENCES host_inventory(host_id),
+    container_id UUID,
+    external_ref TEXT,
+    pid INTEGER NOT NULL,
+    executable TEXT NOT NULL,
+    command_line TEXT,
+    process_state TEXT,
+    memory_rss_kib BIGINT,
+    started_at TIMESTAMPTZ NOT NULL,
+    observed_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_process_runtime_state_host_id
+    ON process_runtime_state(host_id);
+
+CREATE INDEX IF NOT EXISTS idx_process_runtime_state_external_ref
+    ON process_runtime_state(tenant_id, external_ref)
+    WHERE external_ref IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS service_instance (
     instance_id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,

@@ -15,6 +15,9 @@ export const LAYER_COLORS: Record<LayerKind, LayerStyle> = {
 export const NODE_SHAPES: Record<NodeKind, string> = {
   HostInventory:  'diamond',
   NetworkSegment: 'hexagon',
+  ProcessRuntime: 'round-rectangle',
+  ProcessSummary: 'round-hexagon',
+  ProcessGroup:   'ellipse',
   Subject:        'ellipse',
 };
 

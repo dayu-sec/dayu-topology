@@ -234,6 +234,92 @@ responsibility_assignment
 | `focusObjectId` | string | 否 | 当前图的中心对象 ID |
 | `truncated` | bool | 否 | 若后续引入 limit，可指示是否截断 |
 
+### 5.7 `HostProcessTopologyGraph`
+
+该契约用于主机进程视角的专用图，不等同于通用 `TopologyGraph`。
+
+它面向的问题是：
+
+- 某台主机当前有哪些进程
+- 这些进程按程序归并后是什么分布
+- 每类程序的实例数、状态摘要和 RSS 汇总如何
+
+它不是 source-of-truth 对象模型，而是 host-process 场景下的 derived visualization contract。
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "nodes": [
+      {
+        "id": "host:...",
+        "objectKind": "HostInventory",
+        "objectId": "...",
+        "layer": "resource",
+        "label": "local-host",
+        "properties": {}
+      },
+      {
+        "id": "process-summary:host:...",
+        "objectKind": "ProcessSummary",
+        "objectId": "...",
+        "layer": "resource",
+        "label": "processes: 780",
+        "properties": {
+          "totalProcesses": 780,
+          "totalPrograms": 523,
+          "topPrograms": "<defunct> x79, distnoted x20"
+        }
+      },
+      {
+        "id": "process-group:host:...:/usr/sbin/distnoted",
+        "objectKind": "ProcessGroup",
+        "objectId": "...",
+        "layer": "resource",
+        "label": "distnoted x20",
+        "properties": {
+          "executable": "/usr/sbin/distnoted",
+          "processCount": 20,
+          "totalMemoryRssKiB": 0,
+          "dominantState": "-",
+          "states": "-:20"
+        }
+      },
+      {
+        "id": "process:...",
+        "objectKind": "ProcessRuntime",
+        "objectId": "...",
+        "layer": "resource",
+        "label": "distnoted (121)",
+        "properties": {
+          "pid": 121,
+          "executable": "/usr/sbin/distnoted"
+        }
+      }
+    ],
+    "edges": [],
+    "metadata": {
+      "queryTime": "2026-05-13T10:30:00Z",
+      "focusObjectKind": "HostInventory",
+      "focusObjectId": "..."
+    }
+  }
+}
+```
+
+补充对象种类：
+
+- `ProcessSummary`
+- `ProcessGroup`
+- `ProcessRuntime`
+
+补充语义约束：
+
+- `ProcessSummary` 表示主机级进程概览节点
+- `ProcessGroup` 表示按 `executable` 归并后的程序组节点
+- `ProcessRuntime` 表示具体进程实例节点
+- `ProcessSummary` 和 `ProcessGroup` 是 derived visualization node，不是主库基础对象
+
 ---
 
 ## 6. `GET /api/topology/host/{id}`
@@ -404,11 +490,15 @@ read model / query service
 - 先从已有 `HostTopologyView` 做 adapter
 - 再从 `NetworkTopologyView` 做 adapter
 - 不要求前端直接消费 Rust 内部 read model JSON
+- host-process 场景单独使用 `HostProcessTopologyGraph`
+- 不把 `ProcessSummary` / `ProcessGroup` 混入通用 `TopologyGraph`
 
 原因：
 
 - `HostTopologyView` 是后端内部读模型
 - `TopologyGraph` 是前后端公共契约
+- `HostProcessTopologyGraph` 是 host-process 专用契约
+- `ProcessSummary` / `ProcessGroup` 是展示导向聚合节点，不是通用 topology object
 - 两者职责不同，不应混为一层
 
 ---

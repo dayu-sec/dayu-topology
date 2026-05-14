@@ -10,6 +10,6 @@ pub use pipeline::*;
 pub use query::*;
 pub use service::*;
 pub use topology_domain::{
-    BusinessOverviewView, CatalogSummary, EffectiveResponsibilityView, HostTopologyView,
-    NetworkTopologyView, ServiceTopologyView,
+    BusinessOverviewView, CatalogSummary, EffectiveResponsibilityView, HostProcessGroupView,
+    HostTopologyView, NetworkTopologyView, ProcessStateCount, ServiceTopologyView,
 };

@@ -43,6 +43,110 @@ cargo run -p topology-app -- file fixtures/file-ingest/minimal-host-network.json
 
 ---
 
+## 2.1 当前 JSONL replay / import 入口
+
+除了 `file <json>` 的 normalized payload 导入外，当前还支持：
+
+```bash
+cargo run -q -p topology-app -- replay-jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
+
+cargo run -q -p topology-app -- postgres-live import-jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
+
+cargo run -q -p topology-app -- postgres-live replace-jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
+```
+
+这个入口与 `file <json>` 不同：
+
+- `file <json>` 读取的是单个 JSON payload object
+- `replay-jsonl` / `import-jsonl` 读取的是一个或多个 JSONL 文件
+- `replace-jsonl` 会先执行 `reset-public`，再执行正式导入
+- JSONL 的正式导入实现已下沉到 `topology-sync::JsonlImportService`
+
+当前职责分层如下：
+
+```text
+topology-app
+  └─ CLI 参数解析、store 初始化、结果打印
+
+topology-sync
+  └─ 多文件 JSONL replay / import
+  └─ JSON -> DayuInputEnvelope -> IngestEnvelope
+
+topology-api
+  └─ candidate 提取、identity 解析、materialize
+```
+
+---
+
+## 2.2 JSONL import 当前支持的输入
+
+当前 `replay-jsonl` / `import-jsonl` / `replace-jsonl` 已支持：
+
+- `dayu.in.edge.v1`
+  - host fact
+  - network fact
+  - process fact
+- `dayu.in.telemetry.v1`
+  - host metrics
+  - process metrics
+
+当前已接入的 telemetry materialize：
+
+- host metrics -> `HostRuntimeState`
+- `process.state` -> `ProcessRuntimeState.process_state`
+- `process.memory.rss` -> `ProcessRuntimeState.memory_rss_kib`
+
+---
+
+## 2.3 JSONL import 当前落库范围
+
+JSONL import 当前会把数据导入到 storage traits 对应的对象：
+
+- `HostInventory`
+- `NetworkSegment`
+- `HostNetAssoc`
+- `ProcessRuntimeState`
+- `HostRuntimeState`
+- `ServiceInstance`
+- `RuntimeBinding`
+
+其中：
+
+- process 带 `service_ref` 时，才会额外生成 `ServiceInstance` / `RuntimeBinding`
+- process telemetry 不会单独生成新进程，只会回写到已存在的 `ProcessRuntimeState`
+
+---
+
+## 2.4 当前是否落真实数据库
+
+当前默认运行方式仍然不是落真实数据库：
+
+- 默认模式使用 `InMemoryTopologyStore`
+- `postgres-mock` 仍然不是正式 PostgreSQL，只是 mock executor
+
+但 `topology-app` 已支持正式 PostgreSQL 入口：
+
+- `postgres-live reset-public`
+- `postgres-live import-jsonl`
+- `postgres-live replace-jsonl`
+
+也就是说：
+
+- 默认 `replay-jsonl` 结果仍只存在内存中
+- `postgres-live import-jsonl` / `replace-jsonl` 已可直接把结果写入真实 PostgreSQL
+
+当前 repo 已提供 PostgreSQL 开发环境管理：
+
+- [`../../docker-compose.yml`](../../docker-compose.yml)
+
+---
+
 ## 3. Payload 顶层结构
 
 文件必须是一个 JSON object。

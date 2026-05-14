@@ -11,21 +11,25 @@ export type LayerKind = 'resource' | 'governance';
 export type NodeKind =
   | 'HostInventory'
   | 'NetworkSegment'
+  | 'ProcessRuntime'
+  | 'ProcessSummary'
+  | 'ProcessGroup'
   | 'Subject';
 
 // ---- Edge kind (V1: only 2 relation types) ----
 export type EdgeKind =
   | 'host_network_assoc'
+  | 'host_process_assoc'
   | 'responsibility_assignment';
 
 // ---- Layer → NodeKind mapping ----
 export const LAYER_NODE_KINDS: Record<LayerKind, readonly NodeKind[]> = {
-  resource:   ['HostInventory', 'NetworkSegment'],
+  resource:   ['HostInventory', 'NetworkSegment', 'ProcessRuntime', 'ProcessSummary', 'ProcessGroup'],
   governance: ['Subject'],
 };
 
 // ---- Core DTOs ----
-export type TopologyNode = {
+export type HostProcessTopologyNode = {
   id: string;                     // visual element ID (not necessarily the backend UUID)
   objectKind: NodeKind;           // backend object type
   objectId: string;               // backend object UUID
@@ -34,7 +38,7 @@ export type TopologyNode = {
   properties: Record<string, unknown>;
 };
 
-export type TopologyEdge = {
+export type HostProcessTopologyEdge = {
   id: string;
   edgeKind: EdgeKind;
   source: string;                 // node id
@@ -43,9 +47,9 @@ export type TopologyEdge = {
   properties?: Record<string, unknown>;
 };
 
-export type TopologyGraph = {
-  nodes: TopologyNode[];
-  edges: TopologyEdge[];
+export type HostProcessTopologyGraph = {
+  nodes: HostProcessTopologyNode[];
+  edges: HostProcessTopologyEdge[];
   metadata?: {
     queryTime: string;
     tenantId?: string;
@@ -62,7 +66,7 @@ export type ApiResponse<T> =
 
 // ---- App state (single graph view, no multi-view routing in V1) ----
 export type AppState = {
-  graph: TopologyGraph | null;
+  graph: HostProcessTopologyGraph | null;
   loading: boolean;
   error: string | null;
 
@@ -74,14 +78,14 @@ export type AppState = {
 
 export type AppAction =
   | { type: 'FETCH_GRAPH_START' }
-  | { type: 'FETCH_GRAPH_SUCCESS'; graph: TopologyGraph }
+  | { type: 'FETCH_GRAPH_SUCCESS'; graph: HostProcessTopologyGraph }
   | { type: 'FETCH_GRAPH_ERROR'; error: string }
   | { type: 'SELECT_NODE'; nodeId: string | null }
   | { type: 'TOGGLE_LAYER'; layer: LayerKind }
   | { type: 'SET_SEARCH'; query: string }
   | { type: 'SET_LAYOUT'; layout: LayoutName };
 
-export type LayoutName = 'dagre' | 'cose-bilkent';
+export type LayoutName = 'dagre' | 'cose-bilkent' | 'concentric';
 
 // ---- Cytoscape element data extensions ----
 export type CyNodeData = {

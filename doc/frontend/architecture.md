@@ -251,6 +251,17 @@ type TopologyGraph = {
 type ApiResponse<T> =
   | { status: 'ok'; data: T }
   | { status: 'error'; code: string; message: string };
+
+type HostProcessTopologyGraph = {
+  nodes: HostProcessTopologyNode[];
+  edges: HostProcessTopologyEdge[];
+  metadata?: {
+    queryTime: string;
+    focusObjectKind?: 'HostInventory';
+    focusObjectId?: string;
+    truncated?: boolean;
+  };
+};
 ```
 
 ### 7.3 为什么不直接复刻 Rust domain
@@ -261,6 +272,12 @@ type ApiResponse<T> =
 - 前端不需要理解所有内部对象才能渲染第一版图
 - 直接镜像 domain 会把后端未落地对象和未来对象提前暴露给前端
 - read model / visualization model 的稳定性通常高于底层 domain 细节
+
+补充边界：
+
+- `TopologyGraph` 继续用于基础 topology 关系图
+- `HostProcessTopologyGraph` 用于主机进程专视图
+- `ProcessSummary` / `ProcessGroup` 只属于 host-process 专图，不应塞回通用 `TopologyGraph`
 
 ---
 
@@ -300,7 +317,7 @@ App
 User Action
   -> dispatch(action)
   -> fetch graph
-  -> validate ApiResponse<TopologyGraph>
+  -> validate ApiResponse<TopologyGraph | HostProcessTopologyGraph>
   -> graph to cytoscape elements
   -> render / update selection / update filters
 ```
@@ -309,7 +326,7 @@ User Action
 
 ```typescript
 type AppState = {
-  graph: TopologyGraph | null;
+  graph: TopologyGraph | HostProcessTopologyGraph | null;
   loading: boolean;
   error: string | null;
   selectedNodeId: string | null;
@@ -334,6 +351,7 @@ type TopologyApi = {
   getHostTopology(hostId: string): Promise<ApiResponse<TopologyGraph>>;
   getNetworkTopology?(networkId: string): Promise<ApiResponse<TopologyGraph>>;
   getMockHostTopology?(): Promise<ApiResponse<TopologyGraph>>;
+  getHostProcessTopology?(hostId: string): Promise<ApiResponse<HostProcessTopologyGraph>>;
 };
 ```
 

@@ -1,8 +1,8 @@
-import type { TopologyNode } from '../types/domain';
+import type { HostProcessTopologyNode } from '../types/domain';
 import { getLayerStyle } from '../utils/colors';
 
 type Props = {
-  node: TopologyNode | null;
+  node: HostProcessTopologyNode | null;
   onClose: () => void;
 };
 
@@ -53,10 +53,10 @@ export default function NodeDetailPanel({ node, onClose }: Props) {
           <div className="pt-2 border-t border-gray-100">
             <span className="text-xs text-gray-400 block mb-1">Properties</span>
             {Object.entries(node.properties).map(([key, value]) => (
-              <div key={key} className="flex justify-between py-0.5">
-                <span className="text-xs text-gray-500">{key}</span>
-                <span className="text-xs text-gray-700 font-mono">
-                  {String(value)}
+              <div key={key} className="py-1">
+                <span className="text-xs text-gray-500 block">{key}</span>
+                <span className="text-xs text-gray-700 font-mono break-all">
+                  {formatValue(value)}
                 </span>
               </div>
             ))}
@@ -65,4 +65,10 @@ export default function NodeDetailPanel({ node, onClose }: Props) {
       </div>
     </div>
   );
+}
+
+function formatValue(value: unknown) {
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value == null) return '-';
+  return String(value);
 }

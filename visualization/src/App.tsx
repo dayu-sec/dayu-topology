@@ -4,23 +4,56 @@ import TopologyCanvas from './components/TopologyCanvas';
 import FilterBar from './components/FilterBar';
 import LayerLegend from './components/LayerLegend';
 import NodeDetailPanel from './components/NodeDetailPanel';
-import { fetchHostTopology, fetchNetworkTopology, loadFixture } from './api/client';
+import {
+  fetchFirstHostProcessTopology,
+  fetchHostProcessTopology,
+  fetchHostTopology,
+  fetchNetworkTopology,
+  loadFixture,
+} from './api/client';
+import type {
+  HostProcessTopologyEdge,
+  HostProcessTopologyGraph,
+  HostProcessTopologyNode,
+} from './types/domain';
+
+const PROCESS_SUMMARY_PREFIX = 'process-summary:';
+const PROCESS_GROUP_PREFIX = 'process-group:';
+const PROCESS_EXPAND_LIMIT = 20;
+const DEFAULT_HOST_ID = import.meta.env.VITE_DEFAULT_HOST_ID as string | undefined;
+const USE_FIXTURE = import.meta.env.VITE_USE_FIXTURE === '1';
 
 export default function App() {
   const [state, dispatch] = useAppState();
   const [hostId, setHostId] = useState('');
   const [networkId, setNetworkId] = useState('');
+  const [expandedHosts, setExpandedHosts] = useState<Set<string>>(new Set());
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const loadData = useCallback(() => {
     dispatch({ type: 'FETCH_GRAPH_START' });
-    loadFixture('host-topology').then((res) => {
+    const done = (res: Awaited<ReturnType<typeof fetchHostProcessTopology>>) => {
       if (res.status === 'ok') {
+        setExpandedHosts(new Set());
+        setExpandedGroups(new Set());
         dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
       } else {
         dispatch({ type: 'FETCH_GRAPH_ERROR', error: res.message });
       }
-    });
-  }, []);
+    };
+
+    if (USE_FIXTURE) {
+      loadFixture('live-topology').then(done);
+      return;
+    }
+
+    const host = hostId.trim() || DEFAULT_HOST_ID;
+    if (!host) {
+      fetchFirstHostProcessTopology().then(done);
+      return;
+    }
+    fetchHostProcessTopology(host).then(done);
+  }, [dispatch, hostId]);
 
   // Load fixture data on first mount so there is something to render.
   useEffect(() => {
@@ -33,6 +66,8 @@ export default function App() {
     dispatch({ type: 'FETCH_GRAPH_START' });
     fetchHostTopology(trimmed).then((res) => {
       if (res.status === 'ok') {
+        setExpandedHosts(new Set());
+        setExpandedGroups(new Set());
         dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
       } else {
         dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
@@ -46,6 +81,8 @@ export default function App() {
     dispatch({ type: 'FETCH_GRAPH_START' });
     fetchNetworkTopology(trimmed).then((res) => {
       if (res.status === 'ok') {
+        setExpandedHosts(new Set());
+        setExpandedGroups(new Set());
         dispatch({ type: 'FETCH_GRAPH_SUCCESS', graph: res.data });
       } else {
         dispatch({ type: 'FETCH_GRAPH_ERROR', error: `[${res.code}] ${res.message}` });
@@ -53,8 +90,40 @@ export default function App() {
     });
   }, [networkId, dispatch]);
 
+  const displayGraph = buildDisplayGraph(state.graph, expandedHosts, expandedGroups);
   const selectedNode =
-    state.graph?.nodes.find((n) => n.id === state.selectedNodeId) ?? null;
+    displayGraph?.nodes.find((n) => n.id === state.selectedNodeId) ?? null;
+
+  const handleSelectNode = useCallback((nodeId: string | null) => {
+    if (nodeId && nodeId.startsWith(PROCESS_SUMMARY_PREFIX)) {
+      const hostNodeId = nodeId.slice(PROCESS_SUMMARY_PREFIX.length);
+      setExpandedHosts((current) => {
+        const next = new Set(current);
+        if (next.has(hostNodeId)) {
+          next.delete(hostNodeId);
+        } else {
+          next.add(hostNodeId);
+        }
+        return next;
+      });
+      dispatch({ type: 'SELECT_NODE', nodeId: null });
+      return;
+    }
+    if (nodeId && nodeId.startsWith(PROCESS_GROUP_PREFIX)) {
+      setExpandedGroups((current) => {
+        const next = new Set(current);
+        if (next.has(nodeId)) {
+          next.delete(nodeId);
+        } else {
+          next.add(nodeId);
+        }
+        return next;
+      });
+      dispatch({ type: 'SELECT_NODE', nodeId: null });
+      return;
+    }
+    dispatch({ type: 'SELECT_NODE', nodeId });
+  }, [dispatch]);
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
@@ -133,9 +202,9 @@ export default function App() {
         />
         <div className="relative" style={{ height: 'calc(100% - 41px)' }}>
           <TopologyCanvas
-            graph={state.graph}
+            graph={displayGraph}
             selectedNodeId={state.selectedNodeId}
-            onSelectNode={(id) => dispatch({ type: 'SELECT_NODE', nodeId: id })}
+            onSelectNode={handleSelectNode}
             searchQuery={state.searchQuery}
             layout={state.layout}
           />
@@ -168,4 +237,96 @@ export default function App() {
       )}
     </div>
   );
+}
+
+function buildDisplayGraph(
+  source: HostProcessTopologyGraph | null,
+  expandedHosts: Set<string>,
+  expandedGroups: Set<string>,
+): HostProcessTopologyGraph | null {
+  if (!source) return null;
+
+  const nodesById = new Map(source.nodes.map((node) => [node.id, node]));
+  const processSummaryEdgesByHost = new Map<string, HostProcessTopologyEdge[]>();
+  const processGroupEdgesBySummary = new Map<string, HostProcessTopologyEdge[]>();
+  const processEdgesByGroup = new Map<string, HostProcessTopologyEdge[]>();
+
+  for (const edge of source.edges) {
+    if (edge.edgeKind !== 'host_process_assoc') continue;
+    if (edge.target.startsWith(PROCESS_SUMMARY_PREFIX)) {
+      const edges = processSummaryEdgesByHost.get(edge.source) ?? [];
+      edges.push(edge);
+      processSummaryEdgesByHost.set(edge.source, edges);
+      continue;
+    }
+    if (edge.source.startsWith(PROCESS_SUMMARY_PREFIX) && edge.target.startsWith(PROCESS_GROUP_PREFIX)) {
+      const edges = processGroupEdgesBySummary.get(edge.source) ?? [];
+      edges.push(edge);
+      processGroupEdgesBySummary.set(edge.source, edges);
+      continue;
+    }
+    if (edge.source.startsWith(PROCESS_GROUP_PREFIX)) {
+      const edges = processEdgesByGroup.get(edge.source) ?? [];
+      edges.push(edge);
+      processEdgesByGroup.set(edge.source, edges);
+    }
+  }
+
+  const displayNodes: HostProcessTopologyNode[] = [];
+  const displayEdges: HostProcessTopologyEdge[] = [];
+  const includedNodeIds = new Set<string>();
+
+  for (const node of source.nodes) {
+    if (node.objectKind !== 'HostInventory' && node.objectKind !== 'NetworkSegment' && node.objectKind !== 'Subject') {
+      continue;
+    }
+    displayNodes.push(node);
+    includedNodeIds.add(node.id);
+  }
+
+  for (const edge of source.edges) {
+    if (edge.edgeKind === 'host_process_assoc') continue;
+    if (includedNodeIds.has(edge.source) && includedNodeIds.has(edge.target)) {
+      displayEdges.push(edge);
+    }
+  }
+
+  for (const [hostNodeId, summaryEdges] of processSummaryEdgesByHost.entries()) {
+    for (const summaryEdge of summaryEdges) {
+      const summaryNode = nodesById.get(summaryEdge.target);
+      if (!summaryNode) continue;
+
+      displayNodes.push(summaryNode);
+      displayEdges.push(summaryEdge);
+
+      const isExpanded = expandedHosts.has(hostNodeId);
+      if (!isExpanded) continue;
+
+      const groupEdges = processGroupEdgesBySummary.get(summaryNode.id) ?? [];
+      for (const groupEdge of groupEdges) {
+        const groupNode = nodesById.get(groupEdge.target);
+        if (!groupNode) continue;
+
+        displayNodes.push(groupNode);
+        displayEdges.push(groupEdge);
+
+        const isGroupExpanded = expandedGroups.has(groupNode.id);
+        if (!isGroupExpanded) continue;
+
+        const processEdges = processEdgesByGroup.get(groupNode.id) ?? [];
+        for (const processEdge of processEdges.slice(0, PROCESS_EXPAND_LIMIT)) {
+          const processNode = nodesById.get(processEdge.target);
+          if (!processNode) continue;
+          displayNodes.push(processNode);
+          displayEdges.push(processEdge);
+        }
+      }
+    }
+  }
+
+  return {
+    nodes: displayNodes,
+    edges: displayEdges,
+    metadata: source.metadata,
+  };
 }

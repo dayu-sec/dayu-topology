@@ -2,6 +2,7 @@ use orion_error::{conversion::ToStructError, prelude::*};
 use topology_api::ApiReason;
 use topology_domain::DomainReason;
 use topology_storage::StorageReason;
+use topology_sync::SyncReason;
 
 pub type AppError = StructError<AppReason>;
 pub type AppResult<T> = Result<T, AppError>;
@@ -45,10 +46,21 @@ impl From<DomainReason> for AppReason {
     }
 }
 
+impl From<SyncReason> for AppReason {
+    fn from(value: SyncReason) -> Self {
+        match value {
+            SyncReason::General(reason) => AppReason::General(reason),
+            _ => AppReason::InputLoadFailed,
+        }
+    }
+}
+
 pub fn invalid_args() -> AppError {
     AppReason::InvalidArgs
         .to_err()
-        .with_detail("usage: topology-app [demo] | [file <path>] | [postgres-mock]")
+        .with_detail(
+            "usage: topology-app [demo] | [file <path>] | [replay-jsonl <path> [more_paths...]] | [import-jsonl <path> [more_paths...]] | [memory serve --listen <addr>] | [postgres-mock [demo|file <path>|replay-jsonl <path> [more_paths...]|import-jsonl <path> [more_paths...]|replace-jsonl <path> [more_paths...]|reset-public|export-visualization <path>|print-first-host-process-topology|print-host-process-topology <host_id>|serve --listen <addr>]] | [postgres-live [demo|file <path>|replay-jsonl <path> [more_paths...]|import-jsonl <path> [more_paths...]|replace-jsonl <path> [more_paths...]|reset-public|export-visualization <path>|print-first-host-process-topology|print-host-process-topology <host_id>|serve --listen <addr>]]",
+        )
 }
 
 pub fn input_load_failed(detail: impl Into<String>) -> AppError {

@@ -86,8 +86,12 @@ pub fn resolve_host_candidate(
         };
     }
 
+    let host_key = candidate
+        .machine_id
+        .clone()
+        .unwrap_or_else(|| candidate.host_name.clone());
     let host = HostInventory {
-        host_id: Uuid::new_v4(),
+        host_id: stable_uuid("host", &host_key),
         tenant_id: candidate.tenant_id,
         environment_id: candidate.environment_id,
         host_name: candidate.host_name.clone(),
@@ -158,7 +162,20 @@ pub fn resolve_network_candidate(
         .unwrap_or_else(|| "unresolved".to_string());
 
     let segment = NetworkSegment {
-        network_segment_id: Uuid::new_v4(),
+        network_segment_id: stable_uuid(
+            "network_segment",
+            &format!(
+                "{}:{}:{}",
+                candidate.tenant_id.0,
+                candidate
+                    .cidr
+                    .clone()
+                    .or_else(|| candidate.segment_name.clone())
+                    .or_else(|| candidate.ip_addr.clone())
+                    .unwrap_or_else(|| "unresolved".to_string()),
+                segment_name
+            ),
+        ),
         tenant_id: candidate.tenant_id,
         network_domain_id: Some(domain_id),
         environment_id: candidate.environment_id,
@@ -219,7 +236,15 @@ pub fn materialize_host_network(
             existing.clone()
         } else {
             let assoc = HostNetAssoc {
-                assoc_id: Uuid::new_v4(),
+                assoc_id: stable_uuid(
+                    "host_net_assoc",
+                    &format!(
+                        "{}:{}:{}",
+                        host_resolution.host.host_id,
+                        network_resolution.segment.network_segment_id,
+                        ip_addr
+                    ),
+                ),
                 tenant_id: host_candidate.tenant_id,
                 host_id: host_resolution.host.host_id,
                 network_segment_id: network_resolution.segment.network_segment_id,
@@ -260,7 +285,7 @@ fn ensure_default_network_domain(
     }
 
     let domain = NetworkDomain {
-        network_domain_id: Uuid::new_v4(),
+        network_domain_id: stable_uuid("network_domain", &format!("{}:default", tenant_id.0)),
         tenant_id,
         environment_id: None,
         name: "default".to_string(),
@@ -309,6 +334,24 @@ fn collect_identifiers<const N: usize>(
             value,
         })
         .collect()
+}
+
+fn stable_uuid(namespace: &str, key: &str) -> Uuid {
+    let mut bytes = [0u8; 16];
+    let left = fxhash(namespace, key, "a").to_be_bytes();
+    let right = fxhash(namespace, key, "b").to_be_bytes();
+    bytes[..8].copy_from_slice(&left);
+    bytes[8..].copy_from_slice(&right);
+    Uuid::from_bytes(bytes)
+}
+
+fn fxhash(namespace: &str, key: &str, salt: &str) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    ("dayu-topology", namespace, key, salt).hash(&mut hasher);
+    hasher.finish()
 }
 
 #[cfg(test)]

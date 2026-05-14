@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, NetworkSegment,
-    ResponsibilityAssignment, ServiceEntity, ServiceInstance, Subject,
+    ProcessRuntimeState, ResponsibilityAssignment, ServiceEntity, ServiceInstance, Subject,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,11 +27,29 @@ pub struct BusinessOverviewView {
 pub struct HostTopologyView {
     pub host: HostInventory,
     pub latest_runtime: Option<HostRuntimeState>,
+    pub processes: Vec<ProcessRuntimeState>,
+    pub process_groups: Vec<HostProcessGroupView>,
     pub network_segments: Vec<NetworkSegment>,
     pub network_assocs: Vec<HostNetAssoc>,
     pub services: Vec<ServiceEntity>,
     pub assignments: Vec<ResponsibilityAssignment>,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostProcessGroupView {
+    pub executable: String,
+    pub display_name: String,
+    pub process_count: usize,
+    pub total_memory_rss_kib: i64,
+    pub dominant_state: Option<String>,
+    pub state_summary: Vec<ProcessStateCount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProcessStateCount {
+    pub state: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

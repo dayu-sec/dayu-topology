@@ -2,14 +2,15 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use topology_domain::{
-    HostInventory, HostNetAssoc, NetworkDomain, NetworkSegment, ResponsibilityAssignment, Subject,
-    TenantId,
+    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
+    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
+    Subject, TenantId,
 };
 use uuid::Uuid;
 
 use crate::{
-    CatalogStore, GovernanceStore, Page, RuntimeStore, StorageResult, not_configured,
-    operation_failed,
+    AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
+    Page, RuntimeStore, StorageResult, not_configured, operation_failed,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,12 +30,28 @@ pub trait IngestStore {
     fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>>;
 }
 
+#[allow(async_fn_in_trait)]
+pub trait AsyncIngestStore: IngestStore + Sync {
+    async fn record_ingest_job(&self, entry: IngestJobEntry) -> StorageResult<()> {
+        IngestStore::record_ingest_job(self, entry)
+    }
+
+    async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
+        IngestStore::get_ingest_job(self, ingest_id)
+    }
+}
+
 #[derive(Debug, Default)]
 struct MemoryState {
     hosts: Vec<HostInventory>,
     network_domains: Vec<NetworkDomain>,
     network_segments: Vec<NetworkSegment>,
     host_net_assocs: Vec<HostNetAssoc>,
+    host_runtime_states: Vec<HostRuntimeState>,
+    process_runtime_states: Vec<ProcessRuntimeState>,
+    services: Vec<ServiceEntity>,
+    service_instances: Vec<ServiceInstance>,
+    runtime_bindings: Vec<RuntimeBinding>,
     subjects: Vec<Subject>,
     responsibility_assignments: Vec<ResponsibilityAssignment>,
     ingest_jobs: Vec<IngestJobEntry>,
@@ -54,6 +71,11 @@ impl InMemoryTopologyStore {
         Ok(f(&mut state))
     }
 }
+
+impl AsyncCatalogStore for InMemoryTopologyStore {}
+impl AsyncRuntimeStore for InMemoryTopologyStore {}
+impl AsyncGovernanceStore for InMemoryTopologyStore {}
+impl AsyncIngestStore for InMemoryTopologyStore {}
 
 impl CatalogStore for InMemoryTopologyStore {
     fn upsert_business(&self, _business: &topology_domain::BusinessDomain) -> StorageResult<()> {
@@ -97,23 +119,49 @@ impl CatalogStore for InMemoryTopologyStore {
         Ok(None)
     }
 
-    fn upsert_service(&self, _service: &topology_domain::ServiceEntity) -> StorageResult<()> {
-        Err(not_configured())
+    fn upsert_service(&self, service: &topology_domain::ServiceEntity) -> StorageResult<()> {
+        self.with_state(|state| {
+            if let Some(existing) = state
+                .services
+                .iter_mut()
+                .find(|item| item.service_id == service.service_id)
+            {
+                *existing = service.clone();
+            } else {
+                state.services.push(service.clone());
+            }
+        })
     }
 
     fn get_service(
         &self,
-        _service_id: Uuid,
+        service_id: Uuid,
     ) -> StorageResult<Option<topology_domain::ServiceEntity>> {
-        Ok(None)
+        self.with_state(|state| {
+            state
+                .services
+                .iter()
+                .find(|item| item.service_id == service_id)
+                .cloned()
+        })
     }
 
     fn list_services(
         &self,
-        _tenant_id: TenantId,
-        _page: Page,
+        tenant_id: TenantId,
+        page: Page,
     ) -> StorageResult<Vec<topology_domain::ServiceEntity>> {
-        Ok(Vec::new())
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            state
+                .services
+                .iter()
+                .filter(|item| item.tenant_id == tenant_id)
+                .skip(start)
+                .take(page.limit as usize)
+                .cloned()
+                .collect()
+        })
     }
 
     fn upsert_cluster(&self, _cluster: &topology_domain::ClusterInventory) -> StorageResult<()> {
@@ -194,6 +242,23 @@ impl CatalogStore for InMemoryTopologyStore {
                 .skip(start)
                 .take(page.limit as usize)
                 .cloned()
+                .collect()
+        })
+    }
+
+    fn list_all_hosts(&self, page: Page) -> StorageResult<Vec<HostInventory>> {
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            let mut hosts = state.hosts.clone();
+            hosts.sort_by(|left, right| {
+                left.host_name
+                    .cmp(&right.host_name)
+                    .then(left.host_id.cmp(&right.host_id))
+            });
+            hosts
+                .into_iter()
+                .skip(start)
+                .take(page.limit as usize)
                 .collect()
         })
     }
@@ -309,53 +374,150 @@ impl CatalogStore for InMemoryTopologyStore {
 impl RuntimeStore for InMemoryTopologyStore {
     fn insert_host_runtime_state(
         &self,
-        _state: &topology_domain::HostRuntimeState,
+        state: &topology_domain::HostRuntimeState,
     ) -> StorageResult<()> {
-        Err(not_configured())
+        self.with_state(|store| {
+            if let Some(existing) = store
+                .host_runtime_states
+                .iter_mut()
+                .find(|item| item.host_id == state.host_id && item.observed_at == state.observed_at)
+            {
+                *existing = state.clone();
+            } else {
+                store.host_runtime_states.push(state.clone());
+            }
+        })
     }
 
     fn list_host_runtime_states(
         &self,
-        _host_id: Uuid,
-        _page: Page,
+        host_id: Uuid,
+        page: Page,
     ) -> StorageResult<Vec<topology_domain::HostRuntimeState>> {
-        Ok(Vec::new())
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            state
+                .host_runtime_states
+                .iter()
+                .filter(|item| item.host_id == host_id)
+                .skip(start)
+                .take(page.limit as usize)
+                .cloned()
+                .collect()
+        })
+    }
+
+    fn upsert_process_runtime_state(
+        &self,
+        state: &topology_domain::ProcessRuntimeState,
+    ) -> StorageResult<()> {
+        self.with_state(|store| {
+            if let Some(existing) = store
+                .process_runtime_states
+                .iter_mut()
+                .find(|item| item.process_id == state.process_id)
+            {
+                *existing = state.clone();
+            } else {
+                store.process_runtime_states.push(state.clone());
+            }
+        })
+    }
+
+    fn list_process_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<topology_domain::ProcessRuntimeState>> {
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            state
+                .process_runtime_states
+                .iter()
+                .filter(|item| item.host_id == host_id)
+                .skip(start)
+                .take(page.limit as usize)
+                .cloned()
+                .collect()
+        })
     }
 
     fn upsert_service_instance(
         &self,
-        _instance: &topology_domain::ServiceInstance,
+        instance: &topology_domain::ServiceInstance,
     ) -> StorageResult<()> {
-        Err(not_configured())
+        self.with_state(|state| {
+            if let Some(existing) = state
+                .service_instances
+                .iter_mut()
+                .find(|item| item.instance_id == instance.instance_id)
+            {
+                *existing = instance.clone();
+            } else {
+                state.service_instances.push(instance.clone());
+            }
+        })
     }
 
     fn get_service_instance(
         &self,
-        _instance_id: Uuid,
+        instance_id: Uuid,
     ) -> StorageResult<Option<topology_domain::ServiceInstance>> {
-        Ok(None)
+        self.with_state(|state| {
+            state
+                .service_instances
+                .iter()
+                .find(|item| item.instance_id == instance_id)
+                .cloned()
+        })
     }
 
     fn upsert_runtime_binding(
         &self,
-        _binding: &topology_domain::RuntimeBinding,
+        binding: &topology_domain::RuntimeBinding,
     ) -> StorageResult<()> {
-        Err(not_configured())
+        self.with_state(|state| {
+            if let Some(existing) = state
+                .runtime_bindings
+                .iter_mut()
+                .find(|item| item.binding_id == binding.binding_id)
+            {
+                *existing = binding.clone();
+            } else {
+                state.runtime_bindings.push(binding.clone());
+            }
+        })
     }
 
     fn get_runtime_binding(
         &self,
-        _binding_id: Uuid,
+        binding_id: Uuid,
     ) -> StorageResult<Option<topology_domain::RuntimeBinding>> {
-        Ok(None)
+        self.with_state(|state| {
+            state
+                .runtime_bindings
+                .iter()
+                .find(|item| item.binding_id == binding_id)
+                .cloned()
+        })
     }
 
     fn list_runtime_bindings_for_instance(
         &self,
-        _instance_id: Uuid,
-        _page: Page,
+        instance_id: Uuid,
+        page: Page,
     ) -> StorageResult<Vec<topology_domain::RuntimeBinding>> {
-        Ok(Vec::new())
+        self.with_state(|state| {
+            let start = page.offset as usize;
+            state
+                .runtime_bindings
+                .iter()
+                .filter(|item| item.instance_id == instance_id)
+                .skip(start)
+                .take(page.limit as usize)
+                .cloned()
+                .collect()
+        })
     }
 
     fn upsert_workload_pod_membership(
@@ -523,11 +685,10 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        store.upsert_host(&host).unwrap();
-        store.upsert_network_domain(&domain).unwrap();
-        store.upsert_network_segment(&segment).unwrap();
-        store
-            .record_ingest_job(IngestJobEntry {
+        CatalogStore::upsert_host(&store, &host).unwrap();
+        CatalogStore::upsert_network_domain(&store, &domain).unwrap();
+        CatalogStore::upsert_network_segment(&store, &segment).unwrap();
+        IngestStore::record_ingest_job(&store, IngestJobEntry {
                 ingest_id: "ing-1".to_string(),
                 tenant_id,
                 source_name: "fixture".to_string(),
@@ -540,16 +701,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            store.list_hosts(tenant_id, Page::default()).unwrap().len(),
-            1
-        );
-        assert_eq!(
-            store
-                .list_network_segments(tenant_id, Page::default())
+            CatalogStore::list_hosts(&store, tenant_id, Page::default())
                 .unwrap()
                 .len(),
             1
         );
-        assert!(store.get_ingest_job("ing-1").unwrap().is_some());
+        assert_eq!(
+            CatalogStore::list_network_segments(&store, tenant_id, Page::default())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(IngestStore::get_ingest_job(&store, "ing-1")
+            .unwrap()
+            .is_some());
     }
 }

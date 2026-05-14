@@ -13,7 +13,7 @@ const initialState: AppState = {
   selectedNodeId: null,
   layerVisibility: { ...initialLayerVisibility },
   searchQuery: '',
-  layout: 'dagre',
+  layout: 'concentric',
 };
 
 function reducer(state: AppState, action: AppAction): AppState {
