@@ -81,6 +81,33 @@ topology-storage
   - [topology-api/src/service.rs](../../../crates/topology-api/src/service.rs)
   - [topology-api/src/ingest.rs](../../../crates/topology-api/src/ingest.rs)
 
+### 3.1 async-native 执行边界
+
+当前真实 PostgreSQL 导入与查询已经收敛为 async-native 结构：
+
+```text
+topology-app postgres-live
+  └─ Tokio runtime
+     └─ topology-sync / topology-api async path
+        └─ PostgresTopologyStore<LivePostgresExecutor>
+           └─ tokio-postgres async client
+```
+
+约束：
+
+- `LivePostgresExecutor` 不再自持同步 runtime
+- `topology-storage` 不在 store 内部 `block_on(...)`
+- `postgres-live` 必须通过 `build_async()` / `run_async()` 进入
+- `memory` / `postgres-mock` 仍可保留同步调用路径
+
+这条约束的目的，是避免在：
+
+- Axum handler
+- async importer
+- async query service
+
+内部再次嵌套 Tokio runtime，引发 `Cannot start a runtime from within a runtime`。
+
 ---
 
 ## 4. 代码层处理流
@@ -210,6 +237,14 @@ hostname:<host>:pid:<pid>:...
 1. 先 replay `dayu-edge.jsonl`
 2. 再 replay `dayu-telemetry.jsonl`
 
+当前 `dayu.in.telemetry.v1` 样例已经按 `window` 模式收敛，至少包含：
+
+- `collect.mode = "window"`
+- `payload.window.start`
+- `payload.window.end`
+
+这样能与当前 `DayuInputEnvelope` 校验保持一致。
+
 ---
 
 ## 7. 当前落库范围
@@ -218,6 +253,56 @@ hostname:<host>:pid:<pid>:...
 
 - `HostInventory`
 - `NetworkSegment`
+- `HostNetAssoc`
+- `ProcessRuntimeState`
+- `HostRuntimeState`
+- `ServiceEntity`
+- `ServiceInstance`
+- `RuntimeBinding`
+- `ResponsibilityAssignment`
+
+其中：
+
+- process telemetry 会 enrich 已存在的 `ProcessRuntimeState`
+- process fact 带 `service_ref` 时，会连带 materialize `ServiceInstance + RuntimeBinding`
+
+---
+
+## 8. 当前查询出口
+
+当前有两类主要查询出口：
+
+- host-process graph：
+  - `/api/topology/host/first/processes`
+  - `/api/topology/host/{id}/processes`
+- host 结构化 read model：
+  - `/api/topology/host/{id}`
+
+其中 `/api/topology/host/{id}` 当前返回的是正式 HTTP DTO，不再只是 host 摘要，已包含：
+
+- `host`
+- `latestRuntime`
+- `processGroups`
+- `processes`
+- `networkSegments`
+- `networkAssocs`
+- `services`
+- `assignments`
+
+这里的 `services[]` 已是结构化 host-side service relation：
+
+```text
+service
+  └─ instances[]
+     └─ bindings[]
+     └─ processes[]
+```
+
+也就是说，前端或外部调用方已经可以通过这个接口直接拿到：
+
+- host 上有哪些 service
+- 每个 service 有哪些 instance
+- instance 绑定了哪些 process
 - `HostNetAssoc`
 - `ProcessRuntimeState`
 - `HostRuntimeState`

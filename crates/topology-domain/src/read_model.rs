@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BusinessDomain, HostInventory, HostNetAssoc, HostRuntimeState, NetworkSegment,
-    ProcessRuntimeState, ResponsibilityAssignment, ServiceEntity, ServiceInstance, Subject,
+    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
+    Subject,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,9 +32,44 @@ pub struct HostTopologyView {
     pub process_groups: Vec<HostProcessGroupView>,
     pub network_segments: Vec<NetworkSegment>,
     pub network_assocs: Vec<HostNetAssoc>,
-    pub services: Vec<ServiceEntity>,
+    pub services: Vec<HostServiceView>,
     pub assignments: Vec<ResponsibilityAssignment>,
     pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostProcessOverviewView {
+    pub host: HostInventory,
+    pub total_processes: usize,
+    pub total_groups: usize,
+    pub top_groups: Vec<HostProcessGroupView>,
+    pub truncated_group_count: usize,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostProcessGroupsPageView {
+    pub host: HostInventory,
+    pub total_processes: usize,
+    pub total_groups: usize,
+    pub groups: Vec<HostProcessGroupView>,
+    pub limit: usize,
+    pub offset: usize,
+    pub has_more: bool,
+    pub generated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostServiceView {
+    pub service: ServiceEntity,
+    pub instances: Vec<HostServiceInstanceView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostServiceInstanceView {
+    pub instance: ServiceInstance,
+    pub bindings: Vec<RuntimeBinding>,
+    pub processes: Vec<ProcessRuntimeState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

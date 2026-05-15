@@ -63,6 +63,11 @@ const LAYOUTS: Record<LayoutName, cytoscape.LayoutOptions> = {
 export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, searchQuery, layout }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const onSelectNodeRef = useRef(onSelectNode);
+
+  useEffect(() => {
+    onSelectNodeRef.current = onSelectNode;
+  }, [onSelectNode]);
 
   // Initialize Cytoscape instance once.
   useEffect(() => {
@@ -189,12 +194,12 @@ export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, se
 
     cy.on('tap', (evt: cytoscape.EventObject) => {
       if (evt.target === cy) {
-        onSelectNode(null);
+        onSelectNodeRef.current(null);
       }
     });
 
     cy.on('tap', 'node', (evt: cytoscape.EventObject) => {
-      onSelectNode(evt.target.id());
+      onSelectNodeRef.current(evt.target.id());
     });
 
     cyRef.current = cy;
@@ -203,7 +208,7 @@ export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, se
       cy.destroy();
       cyRef.current = null;
     };
-  }, [onSelectNode]);
+  }, []);
 
   // Update elements when graph data changes.
   useEffect(() => {
@@ -211,7 +216,8 @@ export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, se
     if (!cy || !graph) return;
     cy.elements().remove();
     cy.add(graphToCyElements(graph));
-    cy.layout(LAYOUTS[layout]).run();
+    const effectiveLayout = chooseEffectiveLayout(graph, layout);
+    cy.layout(LAYOUTS[effectiveLayout]).run();
     cy.fit(undefined, 50);
   }, [graph, layout]);
 
@@ -260,4 +266,28 @@ export default function TopologyCanvas({ graph, selectedNodeId, onSelectNode, se
       )}
     </div>
   );
+}
+
+function chooseEffectiveLayout(
+  graph: HostProcessTopologyGraph,
+  requestedLayout: LayoutName,
+): LayoutName {
+  if (requestedLayout !== 'dagre') {
+    return requestedLayout;
+  }
+
+  const processSummaryCount = graph.nodes.filter((node) => node.objectKind === 'ProcessSummary').length;
+  const processGroupCount = graph.nodes.filter((node) => node.objectKind === 'ProcessGroup').length;
+  const processRuntimeCount = graph.nodes.filter((node) => node.objectKind === 'ProcessRuntime').length;
+
+  const looksLikeFullGroupsFanout =
+    processSummaryCount >= 1 &&
+    processGroupCount >= 16 &&
+    processRuntimeCount === 0;
+
+  if (looksLikeFullGroupsFanout) {
+    return 'cose-bilkent';
+  }
+
+  return requestedLayout;
 }

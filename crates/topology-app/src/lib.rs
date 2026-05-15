@@ -6,25 +6,28 @@ use std::path::{Path, PathBuf};
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
 use chrono::Utc;
-use orion_error::{conversion::{ConvErr, ToStructError}, prelude::*};
+use orion_error::{
+    conversion::{ConvErr, ToStructError},
+    prelude::*,
+};
 use serde::Serialize;
 use serde_json::Value;
 use topology_api::{TopologyIngestService, TopologyQueryService};
 use topology_domain::{
     DayuInputEnvelope, IngestEnvelope, IngestMode, ObjectKind, SourceKind, TenantId,
 };
+use topology_storage::AsyncIngestStore;
 use topology_storage::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
     InMemoryTopologyStore, IngestStore, LivePostgresExecutor, MemoryPostgresExecutor, Page,
     PostgresTopologyStore, RuntimeStore,
 };
-use topology_storage::AsyncIngestStore;
 use topology_sync::{JsonlImportService, JsonlImportSummary};
 use uuid::Uuid;
 
@@ -92,6 +95,75 @@ struct VisualizationEnvelope {
     data: HostProcessTopologyGraph,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTopologyHttpEnvelope {
+    status: &'static str,
+    data: HostTopologyHttpView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostProcessOverviewHttpEnvelope {
+    status: &'static str,
+    data: HostProcessOverviewHttpView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostProcessGroupsPageHttpEnvelope {
+    status: &'static str,
+    data: HostProcessGroupsPageHttpView,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTopologyHttpView {
+    host: HostTopologyHostDto,
+    latest_runtime: Option<topology_domain::HostRuntimeState>,
+    process_groups: Vec<topology_domain::HostProcessGroupView>,
+    processes: Vec<topology_domain::ProcessRuntimeState>,
+    network_segments: Vec<topology_domain::NetworkSegment>,
+    network_assocs: Vec<topology_domain::HostNetAssoc>,
+    services: Vec<topology_domain::HostServiceView>,
+    assignments: Vec<topology_domain::ResponsibilityAssignment>,
+    generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostProcessOverviewHttpView {
+    host: HostTopologyHostDto,
+    total_processes: usize,
+    total_groups: usize,
+    top_groups: Vec<topology_domain::HostProcessGroupView>,
+    truncated_group_count: usize,
+    generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostProcessGroupsPageHttpView {
+    host: HostTopologyHostDto,
+    total_processes: usize,
+    total_groups: usize,
+    groups: Vec<topology_domain::HostProcessGroupView>,
+    limit: usize,
+    offset: usize,
+    has_more: bool,
+    generated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostTopologyHostDto {
+    id: Uuid,
+    host_name: String,
+    machine_id: Option<String>,
+    os_name: Option<String>,
+    os_version: Option<String>,
+}
+
 #[derive(Clone)]
 struct HttpAppState {
     app: TopologyMonolith,
@@ -134,6 +206,17 @@ struct HostProcessTopologyMetadata {
     process_count: usize,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+struct HostProcessOverviewQuery {
+    top_n: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct HostProcessGroupsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
 impl TopologyMonolith {
     pub fn new_in_memory() -> Self {
         Self::Memory(InMemoryTopologyStore::default())
@@ -145,10 +228,10 @@ impl TopologyMonolith {
         Ok(Self::PostgresMock(store))
     }
 
-    pub fn new_postgres_live(database_url: impl Into<String>) -> AppResult<Self> {
-        let executor = LivePostgresExecutor::new(database_url).conv_err()?;
+    pub async fn new_postgres_live(database_url: impl Into<String>) -> AppResult<Self> {
+        let executor = LivePostgresExecutor::new(database_url).await.conv_err()?;
         let store = PostgresTopologyStore::new(executor);
-        store.run_migrations().conv_err()?;
+        store.run_migrations_async().await.conv_err()?;
         Ok(Self::PostgresLive(store))
     }
 
@@ -162,10 +245,9 @@ impl TopologyMonolith {
                 MonolithInput::Serve { listen } => self.serve_http(listen),
                 other => run_with_postgres_store(store.clone(), other),
             },
-            Self::PostgresLive(store) => match input {
-                MonolithInput::Serve { listen } => self.serve_http(listen),
-                other => run_with_postgres_store(store.clone(), other),
-            },
+            Self::PostgresLive(_) => Err(materialization_missing(
+                "postgres-live requires async run entrypoint",
+            )),
         }
     }
 
@@ -179,18 +261,26 @@ impl TopologyMonolith {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
-            .map_err(|err| AppReason::InputLoadFailed.to_err().with_detail(format!("build tokio runtime: {err}")))?;
+            .map_err(|err| {
+                AppReason::InputLoadFailed
+                    .to_err()
+                    .with_detail(format!("build tokio runtime: {err}"))
+            })?;
 
         let state = HttpAppState { app: self.clone() };
         runtime.block_on(async move {
             let router = build_http_router(state);
 
-            let listener = tokio::net::TcpListener::bind(addr)
-                .await
-                .map_err(|err| AppReason::InputLoadFailed.to_err().with_detail(format!("bind {addr}: {err}")))?;
-            axum::serve(listener, router)
-                .await
-                .map_err(|err| AppReason::InputLoadFailed.to_err().with_detail(format!("serve http: {err}")))?;
+            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|err| {
+                AppReason::InputLoadFailed
+                    .to_err()
+                    .with_detail(format!("bind {addr}: {err}"))
+            })?;
+            axum::serve(listener, router).await.map_err(|err| {
+                AppReason::InputLoadFailed
+                    .to_err()
+                    .with_detail(format!("serve http: {err}"))
+            })?;
             Ok::<(), AppError>(())
         })?;
 
@@ -273,6 +363,72 @@ impl TopologyMonolith {
         }
     }
 
+    pub async fn run_async(&self, input: MonolithInput) -> AppResult<MonolithRunResult> {
+        match self {
+            Self::Memory(store) => match input {
+                MonolithInput::Serve { listen } => self.serve_http_async(listen).await,
+                other => run_with_store(store.clone(), other),
+            },
+            Self::PostgresMock(store) => match input {
+                MonolithInput::Serve { listen } => self.serve_http_async(listen).await,
+                other => run_with_postgres_store(store.clone(), other),
+            },
+            Self::PostgresLive(store) => match input {
+                MonolithInput::Serve { listen } => self.serve_http_async(listen).await,
+                other => run_with_postgres_store_async(store.clone(), other).await,
+            },
+        }
+    }
+
+    pub async fn serve_http_async(
+        &self,
+        listen: impl Into<String>,
+    ) -> AppResult<MonolithRunResult> {
+        let listen = listen.into();
+        let addr: SocketAddr = listen.parse().map_err(|err| {
+            AppReason::InvalidArgs
+                .to_err()
+                .with_detail(format!("parse listen address {listen}: {err}"))
+        })?;
+
+        let state = HttpAppState { app: self.clone() };
+        let router = build_http_router(state);
+
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|err| {
+            AppReason::InputLoadFailed
+                .to_err()
+                .with_detail(format!("bind {addr}: {err}"))
+        })?;
+        axum::serve(listener, router).await.map_err(|err| {
+            AppReason::InputLoadFailed
+                .to_err()
+                .with_detail(format!("serve http: {err}"))
+        })?;
+
+        Ok(MonolithRunResult::Serve { listen })
+    }
+
+    pub async fn run_demo_async(&self) -> AppResult<MonolithRunSummary> {
+        match self.run_async(MonolithInput::Demo).await? {
+            MonolithRunResult::Single(summary) => Ok(summary),
+            MonolithRunResult::Replay(_) => {
+                Err(materialization_missing("expected single run summary"))
+            }
+            MonolithRunResult::Reset(_) => {
+                Err(materialization_missing("expected single run summary"))
+            }
+            MonolithRunResult::ExportVisualization(_) => {
+                Err(materialization_missing("expected single run summary"))
+            }
+            MonolithRunResult::PrintJson(_) => {
+                Err(materialization_missing("expected single run summary"))
+            }
+            MonolithRunResult::Serve { .. } => {
+                Err(materialization_missing("expected single run summary"))
+            }
+        }
+    }
+
     pub fn store(&self) -> Option<&InMemoryTopologyStore> {
         match self {
             Self::Memory(store) => Some(store),
@@ -307,8 +463,18 @@ impl TopologyAppBuilder {
         match self.mode {
             MonolithMode::Memory => Ok(TopologyMonolith::new_in_memory()),
             MonolithMode::PostgresMock => TopologyMonolith::new_postgres_mock(),
+            MonolithMode::PostgresLive => Err(materialization_missing(
+                "postgres-live requires async build entrypoint",
+            )),
+        }
+    }
+
+    pub async fn build_async(self) -> AppResult<TopologyMonolith> {
+        match self.mode {
+            MonolithMode::Memory => Ok(TopologyMonolith::new_in_memory()),
+            MonolithMode::PostgresMock => TopologyMonolith::new_postgres_mock(),
             MonolithMode::PostgresLive => {
-                TopologyMonolith::new_postgres_live(resolve_database_url())
+                TopologyMonolith::new_postgres_live(resolve_database_url()).await
             }
         }
     }
@@ -357,7 +523,7 @@ where
     match input {
         MonolithInput::JsonlFiles(paths) => {
             let tenant_id = TenantId(Uuid::new_v4());
-            run_with_jsonl_files_async(store, tenant_id, paths)
+            run_with_jsonl_files(store, tenant_id, paths)
         }
         MonolithInput::ResetPublic => {
             store.reset_public_schema().conv_err()?;
@@ -368,9 +534,61 @@ where
         MonolithInput::ReplaceJsonlFiles(paths) => {
             store.reset_public_schema().conv_err()?;
             let tenant_id = TenantId(Uuid::new_v4());
-            run_with_jsonl_files_async(store, tenant_id, paths)
+            run_with_jsonl_files(store, tenant_id, paths)
         }
         other => run_with_store(store, other),
+    }
+}
+
+async fn run_with_postgres_store_async(
+    store: PostgresTopologyStore<LivePostgresExecutor>,
+    input: MonolithInput,
+) -> AppResult<MonolithRunResult> {
+    match input {
+        MonolithInput::Demo => {
+            run_with_payload_async(store, TenantId(Uuid::new_v4()), load_demo_payload()?).await
+        }
+        MonolithInput::File(path) => {
+            run_with_payload_async(
+                store,
+                TenantId(Uuid::new_v4()),
+                load_payload_from_file(&path)?,
+            )
+            .await
+        }
+        MonolithInput::JsonlFiles(paths) => {
+            let tenant_id = TenantId(Uuid::new_v4());
+            let summary = JsonlImportService::new(store)
+                .import_files_async(tenant_id, &paths)
+                .await
+                .conv_err()?;
+            Ok(MonolithRunResult::Replay(summary))
+        }
+        MonolithInput::ResetPublic => {
+            store.reset_public_schema_async().await.conv_err()?;
+            Ok(MonolithRunResult::Reset(
+                "public schema reset complete".to_string(),
+            ))
+        }
+        MonolithInput::ReplaceJsonlFiles(paths) => {
+            store.reset_public_schema_async().await.conv_err()?;
+            let tenant_id = TenantId(Uuid::new_v4());
+            let summary = JsonlImportService::new(store)
+                .import_files_async(tenant_id, &paths)
+                .await
+                .conv_err()?;
+            Ok(MonolithRunResult::Replay(summary))
+        }
+        MonolithInput::ExportVisualization(output_path) => {
+            export_visualization_for_store_async(store, output_path).await
+        }
+        MonolithInput::PrintHostProcessTopology(host_id) => {
+            print_host_process_topology_for_store_async(store, Some(host_id)).await
+        }
+        MonolithInput::PrintFirstHostProcessTopology => {
+            print_host_process_topology_for_store_async(store, None).await
+        }
+        MonolithInput::Serve { .. } => Err(invalid_args()),
     }
 }
 
@@ -429,30 +647,50 @@ where
     Ok(MonolithRunResult::Replay(summary))
 }
 
-fn run_with_jsonl_files_async<S>(
+async fn run_with_payload_async<S>(
     store: S,
     tenant_id: TenantId,
-    paths: Vec<PathBuf>,
+    payload_inline: Value,
 ) -> AppResult<MonolithRunResult>
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore + AsyncIngestStore,
 {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| {
-            AppReason::InputLoadFailed
-                .to_err()
-                .with_detail(format!("build tokio runtime: {err}"))
-        })?;
-    let summary = runtime
-        .block_on(async {
-            JsonlImportService::new(store)
-                .import_files_async(tenant_id, &paths)
-                .await
-        })
+    let ingest = TopologyIngestService::new(store.clone());
+    let query = TopologyQueryService::new(store.clone());
+    let envelope = ingest_envelope_from_input(payload_inline, tenant_id)?;
+
+    let (record, _) = ingest
+        .submit_and_materialize_async(envelope)
+        .await
         .conv_err()?;
-    Ok(MonolithRunResult::Replay(summary))
+    let host = AsyncCatalogStore::list_hosts(&store, tenant_id, Page::default())
+        .await
+        .conv_err()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| materialization_missing("host was not materialized"))?;
+    let host_view = query
+        .host_topology_view_async(host.host_id)
+        .await
+        .conv_err()?
+        .ok_or_else(|| materialization_missing("host topology view was not built"))?;
+    let assoc = host_view.network_assocs.first();
+    let network = host_view.network_segments.first();
+    let responsibility_views = query
+        .effective_responsibility_view_async(ObjectKind::Host, host.host_id)
+        .await
+        .conv_err()?;
+
+    Ok(MonolithRunResult::Single(MonolithRunSummary {
+        ingest_id: record.ingest_id,
+        host_name: host_view.host.host_name,
+        network_name: network.map(|item| item.name.clone()),
+        assoc_ip: assoc.map(|item| item.ip_addr.clone()),
+        responsibilities: responsibility_views
+            .into_iter()
+            .map(|view| format!("{}:{:?}", view.subject.display_name, view.assignment.role))
+            .collect(),
+    }))
 }
 
 fn export_visualization_for_store<S>(store: S, output_path: PathBuf) -> AppResult<MonolithRunResult>
@@ -460,6 +698,40 @@ where
     S: Clone + CatalogStore + RuntimeStore + GovernanceStore,
 {
     let graph = build_visualization_graph(store)?;
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).source_err(
+            AppReason::InputLoadFailed,
+            format!("create {}", parent.display()),
+        )?;
+    }
+    let payload = VisualizationEnvelope {
+        status: "ok",
+        data: graph,
+    };
+    let body = serde_json::to_string_pretty(&payload)
+        .source_err(AppReason::InputLoadFailed, "serialize visualization export")?;
+    fs::write(&output_path, body).source_err(
+        AppReason::InputLoadFailed,
+        format!("write {}", output_path.display()),
+    )?;
+
+    Ok(MonolithRunResult::ExportVisualization(
+        VisualizationExportSummary {
+            output_path,
+            host_count: payload.data.metadata.host_count,
+            process_count: payload.data.metadata.process_count,
+        },
+    ))
+}
+
+async fn export_visualization_for_store_async<S>(
+    store: S,
+    output_path: PathBuf,
+) -> AppResult<MonolithRunResult>
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let graph = build_host_process_topology_graph_async(store, None).await?;
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).source_err(
             AppReason::InputLoadFailed,
@@ -498,8 +770,29 @@ where
         status: "ok",
         data: graph,
     };
-    let body = serde_json::to_string_pretty(&payload)
-        .source_err(AppReason::InputLoadFailed, "serialize host process topology")?;
+    let body = serde_json::to_string_pretty(&payload).source_err(
+        AppReason::InputLoadFailed,
+        "serialize host process topology",
+    )?;
+    Ok(MonolithRunResult::PrintJson(body))
+}
+
+async fn print_host_process_topology_for_store_async<S>(
+    store: S,
+    host_id: Option<Uuid>,
+) -> AppResult<MonolithRunResult>
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let graph = build_host_process_topology_graph_async(store, host_id).await?;
+    let payload = VisualizationEnvelope {
+        status: "ok",
+        data: graph,
+    };
+    let body = serde_json::to_string_pretty(&payload).source_err(
+        AppReason::InputLoadFailed,
+        "serialize host process topology",
+    )?;
     Ok(MonolithRunResult::PrintJson(body))
 }
 
@@ -590,7 +883,10 @@ where
 
         let host_node_id = format!("host:{}", view.host.host_id);
         let mut host_props = serde_json::Map::new();
-        host_props.insert("hostName".to_string(), Value::String(view.host.host_name.clone()));
+        host_props.insert(
+            "hostName".to_string(),
+            Value::String(view.host.host_name.clone()),
+        );
         if let Some(machine_id) = &view.host.machine_id {
             host_props.insert("machineId".to_string(), Value::String(machine_id.clone()));
         }
@@ -609,241 +905,10 @@ where
                 host_props.insert("loadavg1m".to_string(), Value::from(loadavg));
             }
             if let Some(memory_used_bytes) = runtime.memory_used_bytes {
-                host_props.insert("memoryUsedBytes".to_string(), Value::from(memory_used_bytes));
-            }
-            if let Some(processes) = runtime.process_count {
-                host_props.insert("processCount".to_string(), Value::from(processes));
-            }
-        }
-        nodes.push(HostProcessTopologyNode {
-            id: host_node_id.clone(),
-            object_kind: "HostInventory",
-            object_id: view.host.host_id.to_string(),
-            layer: "resource",
-            label: view.host.host_name.clone(),
-            properties: host_props,
-        });
-
-        let summary_node_id = format!("process-summary:{}", host_node_id);
-        let mut summary_props = serde_json::Map::new();
-        summary_props.insert(
-            "totalProcesses".to_string(),
-            Value::from(view.processes.len() as i64),
-        );
-        summary_props.insert(
-            "totalPrograms".to_string(),
-            Value::from(view.process_groups.len() as i64),
-        );
-        summary_props.insert(
-            "topPrograms".to_string(),
-            Value::String(
-                view.process_groups
-                    .iter()
-                    .take(5)
-                    .map(|group| format!("{} x{}", group.display_name, group.process_count))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-        );
-        nodes.push(HostProcessTopologyNode {
-            id: summary_node_id.clone(),
-            object_kind: "ProcessSummary",
-            object_id: view.host.host_id.to_string(),
-            layer: "resource",
-            label: format!("processes: {}", view.processes.len()),
-            properties: summary_props,
-        });
-        edges.push(HostProcessTopologyEdge {
-            id: format!("edge:{}:process-summary", view.host.host_id),
-            edge_kind: "host_process_assoc",
-            source: host_node_id.clone(),
-            target: summary_node_id.clone(),
-            label: None,
-            properties: serde_json::Map::new(),
-        });
-
-        for group in &view.process_groups {
-            let group_node_id =
-                format!("process-group:{}:{}", host_node_id, group.executable);
-            let mut group_props = serde_json::Map::new();
-            group_props.insert(
-                "executable".to_string(),
-                Value::String(group.executable.clone()),
-            );
-            group_props.insert(
-                "processCount".to_string(),
-                Value::from(group.process_count as i64),
-            );
-            group_props.insert(
-                "totalMemoryRssKiB".to_string(),
-                Value::from(group.total_memory_rss_kib),
-            );
-            group_props.insert(
-                "totalMemoryRssMiB".to_string(),
-                Value::from(((group.total_memory_rss_kib as f64) / 1024.0 * 10.0).round() / 10.0),
-            );
-            if let Some(state) = &group.dominant_state {
-                group_props.insert("dominantState".to_string(), Value::String(state.clone()));
-            }
-            group_props.insert(
-                "states".to_string(),
-                Value::String(
-                    group
-                        .state_summary
-                        .iter()
-                        .take(3)
-                        .map(|item| format!("{}:{}", item.state, item.count))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
-            );
-            nodes.push(HostProcessTopologyNode {
-                id: group_node_id.clone(),
-                object_kind: "ProcessGroup",
-                object_id: view.host.host_id.to_string(),
-                layer: "resource",
-                label: format!("{} x{}", group.display_name, group.process_count),
-                properties: group_props,
-            });
-            edges.push(HostProcessTopologyEdge {
-                id: format!("edge:{}:{}", summary_node_id, group.executable),
-                edge_kind: "host_process_assoc",
-                source: summary_node_id.clone(),
-                target: group_node_id.clone(),
-                label: None,
-                properties: serde_json::Map::new(),
-            });
-        }
-
-        for process in view.processes {
-            process_count += 1;
-            let process_node_id = format!("process:{}", process.process_id);
-            let mut process_props = serde_json::Map::new();
-            process_props.insert("pid".to_string(), Value::from(process.pid));
-            process_props.insert(
-                "executable".to_string(),
-                Value::String(process.executable.clone()),
-            );
-            if let Some(command_line) = &process.command_line {
-                process_props.insert(
-                    "commandLine".to_string(),
-                    Value::String(command_line.clone()),
+                host_props.insert(
+                    "memoryUsedBytes".to_string(),
+                    Value::from(memory_used_bytes),
                 );
-            }
-            if let Some(state) = &process.process_state {
-                process_props.insert("processState".to_string(), Value::String(state.clone()));
-            }
-            if let Some(memory_rss_kib) = process.memory_rss_kib {
-                process_props.insert("memoryRssKiB".to_string(), Value::from(memory_rss_kib));
-            }
-            process_props.insert(
-                "observedAt".to_string(),
-                Value::String(process.observed_at.0.to_rfc3339()),
-            );
-            nodes.push(HostProcessTopologyNode {
-                id: process_node_id.clone(),
-                object_kind: "ProcessRuntime",
-                object_id: process.process_id.to_string(),
-                layer: "resource",
-                label: format!("{} ({})", basename(&process.executable), process.pid),
-                properties: process_props,
-            });
-            let group_node_id = format!("process-group:{}:{}", host_node_id, process.executable);
-            edges.push(HostProcessTopologyEdge {
-                id: format!("edge:{}:{}", group_node_id, process.process_id),
-                edge_kind: "host_process_assoc",
-                source: group_node_id,
-                target: process_node_id,
-                label: None,
-                properties: serde_json::Map::new(),
-            });
-        }
-    }
-
-    Ok(HostProcessTopologyGraph {
-        metadata: HostProcessTopologyMetadata {
-            query_time: Utc::now().to_rfc3339(),
-            host_count: nodes
-                .iter()
-                .filter(|node| node.object_kind == "HostInventory")
-                .count(),
-            process_count,
-        },
-        nodes,
-        edges,
-    })
-}
-
-async fn build_host_process_topology_graph_async<S>(
-    store: S,
-    focus_host_id: Option<Uuid>,
-) -> AppResult<HostProcessTopologyGraph>
-where
-    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
-{
-    let mut hosts = Vec::new();
-    if let Some(host_id) = focus_host_id {
-        let host = AsyncCatalogStore::get_host(&store, host_id)
-            .await
-            .conv_err()?
-            .ok_or_else(|| materialization_missing(format!("host {host_id} was not found")))?;
-        hosts.push(host);
-    } else {
-        let mut offset = 0;
-        let page_limit = 200;
-        loop {
-            let page = Page {
-                limit: page_limit,
-                offset,
-            };
-            let batch = list_all_hosts_page_async(&store, page).await?;
-            if batch.is_empty() {
-                break;
-            }
-            offset += batch.len() as u32;
-            hosts.extend(batch);
-            if hosts.len() % page_limit as usize != 0 {
-                break;
-            }
-        }
-    }
-
-    let query = TopologyQueryService::new(store.clone());
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-    let mut process_count = 0usize;
-
-    for host in hosts {
-        let Some(view) = query
-            .host_topology_view_async(host.host_id)
-            .await
-            .conv_err()?
-        else {
-            continue;
-        };
-
-        let host_node_id = format!("host:{}", view.host.host_id);
-        let mut host_props = serde_json::Map::new();
-        host_props.insert("hostName".to_string(), Value::String(view.host.host_name.clone()));
-        if let Some(machine_id) = &view.host.machine_id {
-            host_props.insert("machineId".to_string(), Value::String(machine_id.clone()));
-        }
-        if let Some(os_name) = &view.host.os_name {
-            host_props.insert("osName".to_string(), Value::String(os_name.clone()));
-        }
-        if let Some(os_version) = &view.host.os_version {
-            host_props.insert("osVersion".to_string(), Value::String(os_version.clone()));
-        }
-        if let Some(runtime) = &view.latest_runtime {
-            host_props.insert(
-                "observedAt".to_string(),
-                Value::String(runtime.observed_at.0.to_rfc3339()),
-            );
-            if let Some(loadavg) = runtime.loadavg_1m {
-                host_props.insert("loadavg1m".to_string(), Value::from(loadavg));
-            }
-            if let Some(memory_used_bytes) = runtime.memory_used_bytes {
-                host_props.insert("memoryUsedBytes".to_string(), Value::from(memory_used_bytes));
             }
             if let Some(processes) = runtime.process_count {
                 host_props.insert("processCount".to_string(), Value::from(processes));
@@ -991,6 +1056,423 @@ where
                 properties: serde_json::Map::new(),
             });
         }
+
+        for service_view in &view.services {
+            let service_node_id = format!("service:{}", service_view.service.service_id);
+            let mut service_props = serde_json::Map::new();
+            service_props.insert(
+                "serviceName".to_string(),
+                Value::String(service_view.service.name.clone()),
+            );
+            if let Some(external_ref) = &service_view.service.external_ref {
+                service_props.insert(
+                    "externalRef".to_string(),
+                    Value::String(external_ref.clone()),
+                );
+            }
+            service_props.insert(
+                "serviceType".to_string(),
+                Value::String(format!("{:?}", service_view.service.service_type)),
+            );
+            service_props.insert(
+                "boundary".to_string(),
+                Value::String(format!("{:?}", service_view.service.boundary)),
+            );
+            nodes.push(HostProcessTopologyNode {
+                id: service_node_id.clone(),
+                object_kind: "ServiceEntity",
+                object_id: service_view.service.service_id.to_string(),
+                layer: "resource",
+                label: service_view.service.name.clone(),
+                properties: service_props,
+            });
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", host_node_id, service_view.service.service_id),
+                edge_kind: "host_service_assoc",
+                source: host_node_id.clone(),
+                target: service_node_id.clone(),
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+
+            for instance_view in &service_view.instances {
+                let instance_node_id =
+                    format!("service-instance:{}", instance_view.instance.instance_id);
+                let mut instance_props = serde_json::Map::new();
+                instance_props.insert(
+                    "lastSeenAt".to_string(),
+                    Value::String(instance_view.instance.last_seen_at.to_rfc3339()),
+                );
+                instance_props.insert(
+                    "startedAt".to_string(),
+                    Value::String(instance_view.instance.started_at.to_rfc3339()),
+                );
+                nodes.push(HostProcessTopologyNode {
+                    id: instance_node_id.clone(),
+                    object_kind: "ServiceInstance",
+                    object_id: instance_view.instance.instance_id.to_string(),
+                    layer: "resource",
+                    label: format!(
+                        "instance {}",
+                        &instance_view.instance.instance_id.to_string()[..8]
+                    ),
+                    properties: instance_props,
+                });
+                edges.push(HostProcessTopologyEdge {
+                    id: format!(
+                        "edge:{}:{}",
+                        instance_view.instance.instance_id, service_view.service.service_id
+                    ),
+                    edge_kind: "service_instance_assoc",
+                    source: instance_node_id.clone(),
+                    target: service_node_id.clone(),
+                    label: None,
+                    properties: serde_json::Map::new(),
+                });
+
+                for process in &instance_view.processes {
+                    edges.push(HostProcessTopologyEdge {
+                        id: format!(
+                            "edge:{}:{}",
+                            process.process_id, instance_view.instance.instance_id
+                        ),
+                        edge_kind: "process_service_assoc",
+                        source: format!("process:{}", process.process_id),
+                        target: instance_node_id.clone(),
+                        label: None,
+                        properties: serde_json::Map::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(HostProcessTopologyGraph {
+        metadata: HostProcessTopologyMetadata {
+            query_time: Utc::now().to_rfc3339(),
+            host_count: nodes
+                .iter()
+                .filter(|node| node.object_kind == "HostInventory")
+                .count(),
+            process_count,
+        },
+        nodes,
+        edges,
+    })
+}
+
+async fn build_host_process_topology_graph_async<S>(
+    store: S,
+    focus_host_id: Option<Uuid>,
+) -> AppResult<HostProcessTopologyGraph>
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let mut hosts = Vec::new();
+    if let Some(host_id) = focus_host_id {
+        let host = AsyncCatalogStore::get_host(&store, host_id)
+            .await
+            .conv_err()?
+            .ok_or_else(|| materialization_missing(format!("host {host_id} was not found")))?;
+        hosts.push(host);
+    } else {
+        let mut offset = 0;
+        let page_limit = 200;
+        loop {
+            let page = Page {
+                limit: page_limit,
+                offset,
+            };
+            let batch = list_all_hosts_page_async(&store, page).await?;
+            if batch.is_empty() {
+                break;
+            }
+            offset += batch.len() as u32;
+            hosts.extend(batch);
+            if hosts.len() % page_limit as usize != 0 {
+                break;
+            }
+        }
+    }
+
+    let query = TopologyQueryService::new(store.clone());
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    let mut process_count = 0usize;
+
+    for host in hosts {
+        let Some(view) = query
+            .host_topology_view_async(host.host_id)
+            .await
+            .conv_err()?
+        else {
+            continue;
+        };
+
+        let host_node_id = format!("host:{}", view.host.host_id);
+        let mut host_props = serde_json::Map::new();
+        host_props.insert(
+            "hostName".to_string(),
+            Value::String(view.host.host_name.clone()),
+        );
+        if let Some(machine_id) = &view.host.machine_id {
+            host_props.insert("machineId".to_string(), Value::String(machine_id.clone()));
+        }
+        if let Some(os_name) = &view.host.os_name {
+            host_props.insert("osName".to_string(), Value::String(os_name.clone()));
+        }
+        if let Some(os_version) = &view.host.os_version {
+            host_props.insert("osVersion".to_string(), Value::String(os_version.clone()));
+        }
+        if let Some(runtime) = &view.latest_runtime {
+            host_props.insert(
+                "observedAt".to_string(),
+                Value::String(runtime.observed_at.0.to_rfc3339()),
+            );
+            if let Some(loadavg) = runtime.loadavg_1m {
+                host_props.insert("loadavg1m".to_string(), Value::from(loadavg));
+            }
+            if let Some(memory_used_bytes) = runtime.memory_used_bytes {
+                host_props.insert(
+                    "memoryUsedBytes".to_string(),
+                    Value::from(memory_used_bytes),
+                );
+            }
+            if let Some(processes) = runtime.process_count {
+                host_props.insert("processCount".to_string(), Value::from(processes));
+            }
+        }
+        nodes.push(HostProcessTopologyNode {
+            id: host_node_id.clone(),
+            object_kind: "HostInventory",
+            object_id: view.host.host_id.to_string(),
+            layer: "resource",
+            label: view.host.host_name.clone(),
+            properties: host_props,
+        });
+
+        let summary_node_id = format!("process-summary:{}", host_node_id);
+        let mut summary_props = serde_json::Map::new();
+        summary_props.insert(
+            "totalProcesses".to_string(),
+            Value::from(view.processes.len() as i64),
+        );
+        summary_props.insert(
+            "totalPrograms".to_string(),
+            Value::from(view.process_groups.len() as i64),
+        );
+        summary_props.insert(
+            "topPrograms".to_string(),
+            Value::String(
+                view.process_groups
+                    .iter()
+                    .take(5)
+                    .map(|group| format!("{} x{}", group.display_name, group.process_count))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        );
+        nodes.push(HostProcessTopologyNode {
+            id: summary_node_id.clone(),
+            object_kind: "ProcessSummary",
+            object_id: view.host.host_id.to_string(),
+            layer: "resource",
+            label: format!("processes: {}", view.processes.len()),
+            properties: summary_props,
+        });
+        edges.push(HostProcessTopologyEdge {
+            id: format!("edge:{}:process-summary", view.host.host_id),
+            edge_kind: "host_process_assoc",
+            source: host_node_id.clone(),
+            target: summary_node_id.clone(),
+            label: None,
+            properties: serde_json::Map::new(),
+        });
+
+        for group in &view.process_groups {
+            let group_node_id = format!("process-group:{}:{}", host_node_id, group.executable);
+            let mut group_props = serde_json::Map::new();
+            group_props.insert(
+                "executable".to_string(),
+                Value::String(group.executable.clone()),
+            );
+            group_props.insert(
+                "processCount".to_string(),
+                Value::from(group.process_count as i64),
+            );
+            group_props.insert(
+                "totalMemoryRssKiB".to_string(),
+                Value::from(group.total_memory_rss_kib),
+            );
+            group_props.insert(
+                "totalMemoryRssMiB".to_string(),
+                Value::from(((group.total_memory_rss_kib as f64) / 1024.0 * 10.0).round() / 10.0),
+            );
+            if let Some(state) = &group.dominant_state {
+                group_props.insert("dominantState".to_string(), Value::String(state.clone()));
+            }
+            group_props.insert(
+                "states".to_string(),
+                Value::String(
+                    group
+                        .state_summary
+                        .iter()
+                        .take(3)
+                        .map(|item| format!("{}:{}", item.state, item.count))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            );
+            nodes.push(HostProcessTopologyNode {
+                id: group_node_id.clone(),
+                object_kind: "ProcessGroup",
+                object_id: view.host.host_id.to_string(),
+                layer: "resource",
+                label: format!("{} x{}", group.display_name, group.process_count),
+                properties: group_props,
+            });
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", summary_node_id, group.executable),
+                edge_kind: "host_process_assoc",
+                source: summary_node_id.clone(),
+                target: group_node_id.clone(),
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+        }
+
+        for process in view.processes {
+            process_count += 1;
+            let process_node_id = format!("process:{}", process.process_id);
+            let mut process_props = serde_json::Map::new();
+            process_props.insert("pid".to_string(), Value::from(process.pid));
+            process_props.insert(
+                "executable".to_string(),
+                Value::String(process.executable.clone()),
+            );
+            if let Some(command_line) = &process.command_line {
+                process_props.insert(
+                    "commandLine".to_string(),
+                    Value::String(command_line.clone()),
+                );
+            }
+            if let Some(state) = &process.process_state {
+                process_props.insert("processState".to_string(), Value::String(state.clone()));
+            }
+            if let Some(memory_rss_kib) = process.memory_rss_kib {
+                process_props.insert("memoryRssKiB".to_string(), Value::from(memory_rss_kib));
+            }
+            process_props.insert(
+                "observedAt".to_string(),
+                Value::String(process.observed_at.0.to_rfc3339()),
+            );
+            nodes.push(HostProcessTopologyNode {
+                id: process_node_id.clone(),
+                object_kind: "ProcessRuntime",
+                object_id: process.process_id.to_string(),
+                layer: "resource",
+                label: format!("{} ({})", basename(&process.executable), process.pid),
+                properties: process_props,
+            });
+            let group_node_id = format!("process-group:{}:{}", host_node_id, process.executable);
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", group_node_id, process.process_id),
+                edge_kind: "host_process_assoc",
+                source: group_node_id,
+                target: process_node_id,
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+        }
+
+        for service_view in &view.services {
+            let service_node_id = format!("service:{}", service_view.service.service_id);
+            let mut service_props = serde_json::Map::new();
+            service_props.insert(
+                "serviceName".to_string(),
+                Value::String(service_view.service.name.clone()),
+            );
+            if let Some(external_ref) = &service_view.service.external_ref {
+                service_props.insert(
+                    "externalRef".to_string(),
+                    Value::String(external_ref.clone()),
+                );
+            }
+            service_props.insert(
+                "serviceType".to_string(),
+                Value::String(format!("{:?}", service_view.service.service_type)),
+            );
+            service_props.insert(
+                "boundary".to_string(),
+                Value::String(format!("{:?}", service_view.service.boundary)),
+            );
+            nodes.push(HostProcessTopologyNode {
+                id: service_node_id.clone(),
+                object_kind: "ServiceEntity",
+                object_id: service_view.service.service_id.to_string(),
+                layer: "resource",
+                label: service_view.service.name.clone(),
+                properties: service_props,
+            });
+            edges.push(HostProcessTopologyEdge {
+                id: format!("edge:{}:{}", host_node_id, service_view.service.service_id),
+                edge_kind: "host_service_assoc",
+                source: host_node_id.clone(),
+                target: service_node_id.clone(),
+                label: None,
+                properties: serde_json::Map::new(),
+            });
+
+            for instance_view in &service_view.instances {
+                let instance_node_id =
+                    format!("service-instance:{}", instance_view.instance.instance_id);
+                let mut instance_props = serde_json::Map::new();
+                instance_props.insert(
+                    "lastSeenAt".to_string(),
+                    Value::String(instance_view.instance.last_seen_at.to_rfc3339()),
+                );
+                instance_props.insert(
+                    "startedAt".to_string(),
+                    Value::String(instance_view.instance.started_at.to_rfc3339()),
+                );
+                nodes.push(HostProcessTopologyNode {
+                    id: instance_node_id.clone(),
+                    object_kind: "ServiceInstance",
+                    object_id: instance_view.instance.instance_id.to_string(),
+                    layer: "resource",
+                    label: format!(
+                        "instance {}",
+                        &instance_view.instance.instance_id.to_string()[..8]
+                    ),
+                    properties: instance_props,
+                });
+                edges.push(HostProcessTopologyEdge {
+                    id: format!(
+                        "edge:{}:{}",
+                        instance_view.instance.instance_id, service_view.service.service_id
+                    ),
+                    edge_kind: "service_instance_assoc",
+                    source: instance_node_id.clone(),
+                    target: service_node_id.clone(),
+                    label: None,
+                    properties: serde_json::Map::new(),
+                });
+
+                for process in &instance_view.processes {
+                    edges.push(HostProcessTopologyEdge {
+                        id: format!(
+                            "edge:{}:{}",
+                            process.process_id, instance_view.instance.instance_id
+                        ),
+                        edge_kind: "process_service_assoc",
+                        source: format!("process:{}", process.process_id),
+                        target: instance_node_id.clone(),
+                        label: None,
+                        properties: serde_json::Map::new(),
+                    });
+                }
+            }
+        }
     }
 
     Ok(HostProcessTopologyGraph {
@@ -1066,25 +1548,25 @@ pub fn parse_monolith_input(args: &[String]) -> AppResult<(MonolithMode, Monolit
             MonolithMode::PostgresLive,
             MonolithInput::ExportVisualization(PathBuf::from(path)),
         )),
-        [mode, cmd] if mode == "postgres-live" && cmd == "print-first-host-process-topology" => Ok((
-            MonolithMode::PostgresLive,
-            MonolithInput::PrintFirstHostProcessTopology,
-        )),
-        [mode, cmd, host_id]
-            if mode == "postgres-live" && cmd == "print-host-process-topology" =>
-        {
+        [mode, cmd] if mode == "postgres-live" && cmd == "print-first-host-process-topology" => {
+            Ok((
+                MonolithMode::PostgresLive,
+                MonolithInput::PrintFirstHostProcessTopology,
+            ))
+        }
+        [mode, cmd, host_id] if mode == "postgres-live" && cmd == "print-host-process-topology" => {
             Ok((
                 MonolithMode::PostgresLive,
                 MonolithInput::PrintHostProcessTopology(parse_uuid_arg(host_id)?),
             ))
         }
-        [mode, cmd] if mode == "postgres-mock" && cmd == "print-first-host-process-topology" => Ok((
-            MonolithMode::PostgresMock,
-            MonolithInput::PrintFirstHostProcessTopology,
-        )),
-        [mode, cmd, host_id]
-            if mode == "postgres-mock" && cmd == "print-host-process-topology" =>
-        {
+        [mode, cmd] if mode == "postgres-mock" && cmd == "print-first-host-process-topology" => {
+            Ok((
+                MonolithMode::PostgresMock,
+                MonolithInput::PrintFirstHostProcessTopology,
+            ))
+        }
+        [mode, cmd, host_id] if mode == "postgres-mock" && cmd == "print-host-process-topology" => {
             Ok((
                 MonolithMode::PostgresMock,
                 MonolithInput::PrintHostProcessTopology(parse_uuid_arg(host_id)?),
@@ -1101,7 +1583,12 @@ pub fn parse_monolith_input(args: &[String]) -> AppResult<(MonolithMode, Monolit
                 "memory" => MonolithMode::Memory,
                 _ => return Err(invalid_args()),
             };
-            Ok((mode, MonolithInput::Serve { listen: listen.clone() }))
+            Ok((
+                mode,
+                MonolithInput::Serve {
+                    listen: listen.clone(),
+                },
+            ))
         }
         [cmd, paths @ ..] if cmd == "replay-jsonl" && !paths.is_empty() => Ok((
             MonolithMode::Memory,
@@ -1205,7 +1692,9 @@ async fn get_host_process_topology(
 
 async fn get_first_host_process_topology(State(state): State<HttpAppState>) -> Response {
     match &state.app {
-        TopologyMonolith::Memory(store) => host_process_topology_response(store.clone(), None).await,
+        TopologyMonolith::Memory(store) => {
+            host_process_topology_response(store.clone(), None).await
+        }
         TopologyMonolith::PostgresMock(store) => {
             host_process_topology_response(store.clone(), None).await
         }
@@ -1235,6 +1724,63 @@ async fn get_host_topology(
     }
 }
 
+async fn get_first_host_topology(State(state): State<HttpAppState>) -> Response {
+    match &state.app {
+        TopologyMonolith::Memory(store) => first_host_topology_response(store.clone()).await,
+        TopologyMonolith::PostgresMock(store) => first_host_topology_response(store.clone()).await,
+        TopologyMonolith::PostgresLive(store) => first_host_topology_response(store.clone()).await,
+    }
+}
+
+async fn get_host_process_overview(
+    State(state): State<HttpAppState>,
+    AxumPath(host_id): AxumPath<String>,
+    Query(query): Query<HostProcessOverviewQuery>,
+) -> Response {
+    let host_id = match parse_uuid_arg(&host_id) {
+        Ok(host_id) => host_id,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
+    };
+    let top_n = query.top_n.unwrap_or(12).clamp(1, 200);
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            host_process_overview_response(store.clone(), host_id, top_n).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            host_process_overview_response(store.clone(), host_id, top_n).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            host_process_overview_response(store.clone(), host_id, top_n).await
+        }
+    }
+}
+
+async fn get_host_process_groups_page(
+    State(state): State<HttpAppState>,
+    AxumPath(host_id): AxumPath<String>,
+    Query(query): Query<HostProcessGroupsQuery>,
+) -> Response {
+    let host_id = match parse_uuid_arg(&host_id) {
+        Ok(host_id) => host_id,
+        Err(err) => return json_error(StatusCode::BAD_REQUEST, err.to_string()),
+    };
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let offset = query.offset.unwrap_or(0);
+
+    match &state.app {
+        TopologyMonolith::Memory(store) => {
+            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+        }
+        TopologyMonolith::PostgresMock(store) => {
+            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+        }
+        TopologyMonolith::PostgresLive(store) => {
+            host_process_groups_page_response(store.clone(), host_id, offset, limit).await
+        }
+    }
+}
+
 async fn host_topology_response<S>(store: S, host_id: Uuid) -> Response
 where
     S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
@@ -1242,23 +1788,112 @@ where
     let query = TopologyQueryService::new(store);
     match query.host_topology_view_async(host_id).await {
         Ok(Some(view)) => {
-            let payload = serde_json::json!({
-                "status": "ok",
-                "data": {
-                    "host": {
-                        "id": view.host.host_id,
-                        "hostName": view.host.host_name,
-                        "machineId": view.host.machine_id,
-                        "osName": view.host.os_name,
-                        "osVersion": view.host.os_version,
+            let payload = HostTopologyHttpEnvelope {
+                status: "ok",
+                data: HostTopologyHttpView {
+                    host: HostTopologyHostDto {
+                        id: view.host.host_id,
+                        host_name: view.host.host_name,
+                        machine_id: view.host.machine_id,
+                        os_name: view.host.os_name,
+                        os_version: view.host.os_version,
                     },
-                    "latestRuntime": view.latest_runtime,
-                    "networkSegments": view.network_segments,
-                    "networkAssocs": view.network_assocs,
-                    "assignments": view.assignments,
-                    "generatedAt": view.generated_at,
-                }
-            });
+                    latest_runtime: view.latest_runtime,
+                    process_groups: view.process_groups,
+                    processes: view.processes,
+                    network_segments: view.network_segments,
+                    network_assocs: view.network_assocs,
+                    services: view.services,
+                    assignments: view.assignments,
+                    generated_at: view.generated_at,
+                },
+            };
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Ok(None) => json_error(StatusCode::NOT_FOUND, format!("host {host_id} not found")),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+async fn first_host_topology_response<S>(store: S) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let hosts = match AsyncCatalogStore::list_all_hosts(&store, Page::default()).await {
+        Ok(hosts) => hosts,
+        Err(err) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    };
+    let Some(host) = hosts.into_iter().next() else {
+        return json_error(StatusCode::NOT_FOUND, "no host found".to_string());
+    };
+    host_topology_response(store, host.host_id).await
+}
+
+async fn host_process_overview_response<S>(store: S, host_id: Uuid, top_n: usize) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let query = TopologyQueryService::new(store);
+    match query.host_process_overview_view_async(host_id, top_n).await {
+        Ok(Some(view)) => {
+            let payload = HostProcessOverviewHttpEnvelope {
+                status: "ok",
+                data: HostProcessOverviewHttpView {
+                    host: HostTopologyHostDto {
+                        id: view.host.host_id,
+                        host_name: view.host.host_name,
+                        machine_id: view.host.machine_id,
+                        os_name: view.host.os_name,
+                        os_version: view.host.os_version,
+                    },
+                    total_processes: view.total_processes,
+                    total_groups: view.total_groups,
+                    top_groups: view.top_groups,
+                    truncated_group_count: view.truncated_group_count,
+                    generated_at: view.generated_at,
+                },
+            };
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Ok(None) => json_error(StatusCode::NOT_FOUND, format!("host {host_id} not found")),
+        Err(err) => json_error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
+    }
+}
+
+async fn host_process_groups_page_response<S>(
+    store: S,
+    host_id: Uuid,
+    offset: usize,
+    limit: usize,
+) -> Response
+where
+    S: Clone + AsyncCatalogStore + AsyncRuntimeStore + AsyncGovernanceStore,
+{
+    let query = TopologyQueryService::new(store);
+    match query
+        .host_process_groups_page_view_async(host_id, offset, limit)
+        .await
+    {
+        Ok(Some(view)) => {
+            let payload = HostProcessGroupsPageHttpEnvelope {
+                status: "ok",
+                data: HostProcessGroupsPageHttpView {
+                    host: HostTopologyHostDto {
+                        id: view.host.host_id,
+                        host_name: view.host.host_name,
+                        machine_id: view.host.machine_id,
+                        os_name: view.host.os_name,
+                        os_version: view.host.os_version,
+                    },
+                    total_processes: view.total_processes,
+                    total_groups: view.total_groups,
+                    groups: view.groups,
+                    limit: view.limit,
+                    offset: view.offset,
+                    has_more: view.has_more,
+                    generated_at: view.generated_at,
+                },
+            };
             (StatusCode::OK, Json(payload)).into_response()
         }
         Ok(None) => json_error(StatusCode::NOT_FOUND, format!("host {host_id} not found")),
@@ -1297,7 +1932,16 @@ fn json_error(status: StatusCode, message: String) -> Response {
 fn build_http_router(state: HttpAppState) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/topology/host/first", get(get_first_host_topology))
         .route("/api/topology/host/{id}", get(get_host_topology))
+        .route(
+            "/api/topology/host/{id}/process-overview",
+            get(get_host_process_overview),
+        )
+        .route(
+            "/api/topology/host/{id}/process-groups",
+            get(get_host_process_groups_page),
+        )
         .route(
             "/api/topology/host/first/processes",
             get(get_first_host_process_topology),
@@ -1472,7 +2116,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(mode, MonolithMode::PostgresLive);
-        assert!(matches!(input, MonolithInput::PrintFirstHostProcessTopology));
+        assert!(matches!(
+            input,
+            MonolithInput::PrintFirstHostProcessTopology
+        ));
     }
 
     #[test]
@@ -1590,10 +2237,15 @@ mod tests {
             .join("../../fixtures/dayu_edge_host_process_sample.jsonl");
         app.replay_jsonl(fixture).unwrap();
 
-        let result = app.run(MonolithInput::PrintFirstHostProcessTopology).unwrap();
+        let result = app
+            .run(MonolithInput::PrintFirstHostProcessTopology)
+            .unwrap();
         let body = match result {
             MonolithRunResult::PrintJson(body) => body,
-            other => panic!("expected print json result, got {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "expected print json result, got {:?}",
+                std::mem::discriminant(&other)
+            ),
         };
 
         assert!(body.contains("\"objectKind\": \"HostInventory\""));
@@ -1621,5 +2273,184 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_router_returns_structured_host_topology_with_services_and_processes() {
+        let app = TopologyMonolith::new_in_memory();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/dayu_edge_service_binding_sample.jsonl");
+        app.replay_jsonl(fixture).unwrap();
+
+        let host_id = app
+            .store()
+            .and_then(|store| CatalogStore::list_all_hosts(store, Page::default()).ok())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .host_id;
+
+        let router = build_http_router(HttpAppState { app });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/topology/host/{host_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["data"]["host"]["hostName"], "local-host");
+        assert_eq!(
+            payload["data"]["processGroups"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(payload["data"]["processes"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["services"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["services"][0]["service"]["name"], "sshd");
+        assert_eq!(
+            payload["data"]["services"][0]["instances"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            payload["data"]["services"][0]["instances"][0]["processes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn http_router_returns_first_host_topology() {
+        let app = TopologyMonolith::new_in_memory();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/dayu_edge_service_binding_sample.jsonl");
+        app.replay_jsonl(fixture).unwrap();
+
+        let router = build_http_router(HttpAppState { app });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/topology/host/first")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["data"]["host"]["hostName"], "local-host");
+        assert_eq!(payload["data"]["services"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn http_router_returns_host_process_overview() {
+        let app = TopologyMonolith::new_in_memory();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/dayu_edge_host_process_sample.jsonl");
+        app.replay_jsonl(fixture).unwrap();
+
+        let host_id = app
+            .store()
+            .and_then(|store| CatalogStore::list_all_hosts(store, Page::default()).ok())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .host_id;
+
+        let router = build_http_router(HttpAppState { app });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/topology/host/{host_id}/process-overview?top_n=5"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["data"]["host"]["hostName"], "local-host");
+        assert_eq!(payload["data"]["totalProcesses"], 1);
+        assert_eq!(payload["data"]["totalGroups"], 1);
+        assert_eq!(payload["data"]["topGroups"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["truncatedGroupCount"], 0);
+    }
+
+    #[tokio::test]
+    async fn http_router_returns_host_process_groups_page() {
+        let app = TopologyMonolith::new_in_memory();
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/dayu_edge_host_process_sample.jsonl");
+        app.replay_jsonl(fixture).unwrap();
+
+        let host_id = app
+            .store()
+            .and_then(|store| CatalogStore::list_all_hosts(store, Page::default()).ok())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .host_id;
+
+        let router = build_http_router(HttpAppState { app });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/topology/host/{host_id}/process-groups?limit=10&offset=0"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["data"]["host"]["hostName"], "local-host");
+        assert_eq!(payload["data"]["totalProcesses"], 1);
+        assert_eq!(payload["data"]["totalGroups"], 1);
+        assert_eq!(payload["data"]["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["data"]["limit"], 10);
+        assert_eq!(payload["data"]["offset"], 0);
+        assert_eq!(payload["data"]["hasMore"], false);
     }
 }

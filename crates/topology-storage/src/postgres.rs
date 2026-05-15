@@ -10,8 +10,10 @@ use uuid::Uuid;
 
 use crate::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
-    IngestStore, Page, RuntimeStore, StorageResult, memory::{AsyncIngestStore, IngestJobEntry},
-    migrations::MIGRATIONS, not_configured, operation_failed,
+    IngestStore, Page, RuntimeStore, StorageResult,
+    memory::{AsyncIngestStore, IngestJobEntry},
+    migrations::MIGRATIONS,
+    not_configured, operation_failed,
 };
 
 pub mod sql {
@@ -377,6 +379,14 @@ FROM service_instance
 WHERE instance_id = NULLIF($1, '')::uuid
 "#;
 
+    pub const LIST_SERVICE_INSTANCES: &str = r#"
+SELECT instance_id, tenant_id, service_id, workload_id, started_at, ended_at, last_seen_at
+FROM service_instance
+WHERE service_id = NULLIF($1, '')::uuid
+ORDER BY started_at DESC, instance_id ASC
+LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
+"#;
+
     pub const UPSERT_RUNTIME_BINDING: &str = r#"
 INSERT INTO runtime_binding (
     binding_id, instance_id, object_type, object_id, scope, confidence, source,
@@ -413,6 +423,15 @@ WHERE instance_id = NULLIF($1, '')::uuid
 ORDER BY created_at ASC, binding_id ASC
 LIMIT NULLIF($2, '')::int4 OFFSET NULLIF($3, '')::int4
 "#;
+
+    pub const LIST_RUNTIME_BINDINGS_FOR_OBJECT: &str = r#"
+SELECT binding_id, instance_id, object_type, object_id, scope, confidence, source,
+       valid_from, valid_to, created_at, updated_at
+FROM runtime_binding
+WHERE object_type = $1 AND object_id = NULLIF($2, '')::uuid
+ORDER BY created_at ASC, binding_id ASC
+LIMIT NULLIF($3, '')::int4 OFFSET NULLIF($4, '')::int4
+"#;
 }
 
 pub trait PostgresExecutor: Clone {
@@ -431,14 +450,16 @@ pub struct PostgresTopologyStore<E> {
     executor: E,
 }
 
+impl<E> PostgresTopologyStore<E> {
+    pub fn new(executor: E) -> Self {
+        Self { executor }
+    }
+}
+
 impl<E> PostgresTopologyStore<E>
 where
     E: PostgresExecutor,
 {
-    pub fn new(executor: E) -> Self {
-        Self { executor }
-    }
-
     pub fn run_migrations(&self) -> StorageResult<()> {
         for migration in MIGRATIONS {
             self.executor.exec_batch(migration.sql)?;
@@ -452,10 +473,286 @@ where
     }
 }
 
-impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {}
-impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {}
-impl AsyncGovernanceStore for PostgresTopologyStore<MemoryPostgresExecutor> {}
-impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {}
+impl PostgresTopologyStore<LivePostgresExecutor> {
+    pub async fn run_migrations_async(&self) -> StorageResult<()> {
+        for migration in MIGRATIONS {
+            self.executor.exec_batch_async(migration.sql).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn reset_public_schema_async(&self) -> StorageResult<()> {
+        self.executor
+            .exec_batch_async(sql::RESET_PUBLIC_SCHEMA)
+            .await?;
+        self.run_migrations_async().await
+    }
+}
+
+impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+    async fn upsert_business(
+        &self,
+        business: &topology_domain::BusinessDomain,
+    ) -> StorageResult<()> {
+        CatalogStore::upsert_business(self, business)
+    }
+    async fn get_business(
+        &self,
+        business_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::BusinessDomain>> {
+        CatalogStore::get_business(self, business_id)
+    }
+    async fn list_businesses(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<topology_domain::BusinessDomain>> {
+        CatalogStore::list_businesses(self, tenant_id, page)
+    }
+    async fn upsert_system(&self, system: &topology_domain::SystemBoundary) -> StorageResult<()> {
+        CatalogStore::upsert_system(self, system)
+    }
+    async fn get_system(
+        &self,
+        system_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::SystemBoundary>> {
+        CatalogStore::get_system(self, system_id)
+    }
+    async fn upsert_subsystem(&self, subsystem: &topology_domain::Subsystem) -> StorageResult<()> {
+        CatalogStore::upsert_subsystem(self, subsystem)
+    }
+    async fn get_subsystem(
+        &self,
+        subsystem_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::Subsystem>> {
+        CatalogStore::get_subsystem(self, subsystem_id)
+    }
+    async fn upsert_service(&self, service: &ServiceEntity) -> StorageResult<()> {
+        CatalogStore::upsert_service(self, service)
+    }
+    async fn get_service(&self, service_id: Uuid) -> StorageResult<Option<ServiceEntity>> {
+        CatalogStore::get_service(self, service_id)
+    }
+    async fn list_services(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceEntity>> {
+        CatalogStore::list_services(self, tenant_id, page)
+    }
+    async fn upsert_cluster(
+        &self,
+        cluster: &topology_domain::ClusterInventory,
+    ) -> StorageResult<()> {
+        CatalogStore::upsert_cluster(self, cluster)
+    }
+    async fn get_cluster(
+        &self,
+        cluster_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::ClusterInventory>> {
+        CatalogStore::get_cluster(self, cluster_id)
+    }
+    async fn upsert_namespace(
+        &self,
+        namespace: &topology_domain::NamespaceInventory,
+    ) -> StorageResult<()> {
+        CatalogStore::upsert_namespace(self, namespace)
+    }
+    async fn get_namespace(
+        &self,
+        namespace_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::NamespaceInventory>> {
+        CatalogStore::get_namespace(self, namespace_id)
+    }
+    async fn upsert_workload(
+        &self,
+        workload: &topology_domain::WorkloadEntity,
+    ) -> StorageResult<()> {
+        CatalogStore::upsert_workload(self, workload)
+    }
+    async fn get_workload(
+        &self,
+        workload_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::WorkloadEntity>> {
+        CatalogStore::get_workload(self, workload_id)
+    }
+    async fn upsert_pod(&self, pod: &topology_domain::PodInventory) -> StorageResult<()> {
+        CatalogStore::upsert_pod(self, pod)
+    }
+    async fn get_pod(&self, pod_id: Uuid) -> StorageResult<Option<topology_domain::PodInventory>> {
+        CatalogStore::get_pod(self, pod_id)
+    }
+    async fn upsert_host(&self, host: &HostInventory) -> StorageResult<()> {
+        CatalogStore::upsert_host(self, host)
+    }
+    async fn get_host(&self, host_id: Uuid) -> StorageResult<Option<HostInventory>> {
+        CatalogStore::get_host(self, host_id)
+    }
+    async fn list_hosts(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<HostInventory>> {
+        CatalogStore::list_hosts(self, tenant_id, page)
+    }
+    async fn list_all_hosts(&self, page: Page) -> StorageResult<Vec<HostInventory>> {
+        CatalogStore::list_all_hosts(self, page)
+    }
+    async fn upsert_network_domain(&self, domain: &NetworkDomain) -> StorageResult<()> {
+        CatalogStore::upsert_network_domain(self, domain)
+    }
+    async fn get_network_domain(
+        &self,
+        network_domain_id: Uuid,
+    ) -> StorageResult<Option<NetworkDomain>> {
+        CatalogStore::get_network_domain(self, network_domain_id)
+    }
+    async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()> {
+        CatalogStore::upsert_network_segment(self, segment)
+    }
+    async fn get_network_segment(
+        &self,
+        network_segment_id: Uuid,
+    ) -> StorageResult<Option<NetworkSegment>> {
+        CatalogStore::get_network_segment(self, network_segment_id)
+    }
+    async fn list_network_segments(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkSegment>> {
+        CatalogStore::list_network_segments(self, tenant_id, page)
+    }
+    async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()> {
+        CatalogStore::upsert_subject(self, subject)
+    }
+    async fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>> {
+        CatalogStore::get_subject(self, subject_id)
+    }
+    async fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>> {
+        CatalogStore::list_subjects(self, tenant_id, page)
+    }
+}
+
+impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+    async fn insert_host_runtime_state(&self, state: &HostRuntimeState) -> StorageResult<()> {
+        RuntimeStore::insert_host_runtime_state(self, state)
+    }
+    async fn list_host_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostRuntimeState>> {
+        RuntimeStore::list_host_runtime_states(self, host_id, page)
+    }
+    async fn upsert_process_runtime_state(&self, state: &ProcessRuntimeState) -> StorageResult<()> {
+        RuntimeStore::upsert_process_runtime_state(self, state)
+    }
+    async fn list_process_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ProcessRuntimeState>> {
+        RuntimeStore::list_process_runtime_states(self, host_id, page)
+    }
+    async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
+        RuntimeStore::upsert_service_instance(self, instance)
+    }
+    async fn get_service_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Option<ServiceInstance>> {
+        RuntimeStore::get_service_instance(self, instance_id)
+    }
+    async fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceInstance>> {
+        RuntimeStore::list_service_instances(self, service_id, page)
+    }
+    async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()> {
+        RuntimeStore::upsert_runtime_binding(self, binding)
+    }
+    async fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>> {
+        RuntimeStore::get_runtime_binding(self, binding_id)
+    }
+    async fn list_runtime_bindings_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>> {
+        RuntimeStore::list_runtime_bindings_for_instance(self, instance_id, page)
+    }
+    async fn list_runtime_bindings_for_object(
+        &self,
+        object_type: RuntimeObjectType,
+        object_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>> {
+        RuntimeStore::list_runtime_bindings_for_object(self, object_type, object_id, page)
+    }
+    async fn upsert_workload_pod_membership(
+        &self,
+        membership: &topology_domain::WorkloadPodMembership,
+    ) -> StorageResult<()> {
+        RuntimeStore::upsert_workload_pod_membership(self, membership)
+    }
+    async fn upsert_pod_placement(
+        &self,
+        placement: &topology_domain::PodPlacement,
+    ) -> StorageResult<()> {
+        RuntimeStore::upsert_pod_placement(self, placement)
+    }
+    async fn upsert_host_net_assoc(&self, assoc: &HostNetAssoc) -> StorageResult<()> {
+        RuntimeStore::upsert_host_net_assoc(self, assoc)
+    }
+    async fn list_host_net_assocs(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostNetAssoc>> {
+        RuntimeStore::list_host_net_assocs(self, host_id, page)
+    }
+}
+
+impl AsyncGovernanceStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+    async fn upsert_responsibility_assignment(
+        &self,
+        assignment: &ResponsibilityAssignment,
+    ) -> StorageResult<()> {
+        GovernanceStore::upsert_responsibility_assignment(self, assignment)
+    }
+    async fn get_responsibility_assignment(
+        &self,
+        assignment_id: Uuid,
+    ) -> StorageResult<Option<ResponsibilityAssignment>> {
+        GovernanceStore::get_responsibility_assignment(self, assignment_id)
+    }
+    async fn list_responsibility_assignments_for_target(
+        &self,
+        target_kind: ObjectKind,
+        target_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ResponsibilityAssignment>> {
+        GovernanceStore::list_responsibility_assignments_for_target(
+            self,
+            target_kind,
+            target_id,
+            page,
+        )
+    }
+}
+
+impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+    async fn record_ingest_job(&self, entry: IngestJobEntry) -> StorageResult<()> {
+        IngestStore::record_ingest_job(self, entry)
+    }
+
+    async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
+        IngestStore::get_ingest_job(self, ingest_id)
+    }
+}
 
 impl<E> CatalogStore for PostgresTopologyStore<E>
 where
@@ -512,7 +809,10 @@ where
                     .business_id
                     .map(|id| id.to_string())
                     .unwrap_or_default(),
-                service.system_id.map(|id| id.to_string()).unwrap_or_default(),
+                service
+                    .system_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
                 service
                     .subsystem_id
                     .map(|id| id.to_string())
@@ -943,6 +1243,24 @@ where
             .transpose()?)
     }
 
+    fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<topology_domain::ServiceInstance>> {
+        let rows = self.executor.query_rows(
+            sql::LIST_SERVICE_INSTANCES,
+            &[
+                service_id.to_string(),
+                page.limit.to_string(),
+                page.offset.to_string(),
+            ],
+        )?;
+        rows.into_iter()
+            .map(|row| decode_service_instance(&row))
+            .collect()
+    }
+
     fn upsert_runtime_binding(
         &self,
         binding: &topology_domain::RuntimeBinding,
@@ -993,6 +1311,26 @@ where
             sql::LIST_RUNTIME_BINDINGS_FOR_INSTANCE,
             &[
                 instance_id.to_string(),
+                page.limit.to_string(),
+                page.offset.to_string(),
+            ],
+        )?;
+        rows.into_iter()
+            .map(|row| decode_runtime_binding(&row))
+            .collect()
+    }
+
+    fn list_runtime_bindings_for_object(
+        &self,
+        object_type: RuntimeObjectType,
+        object_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<topology_domain::RuntimeBinding>> {
+        let rows = self.executor.query_rows(
+            sql::LIST_RUNTIME_BINDINGS_FOR_OBJECT,
+            &[
+                format!("{:?}", object_type),
+                object_id.to_string(),
                 page.limit.to_string(),
                 page.offset.to_string(),
             ],
@@ -1175,7 +1513,6 @@ pub struct MemoryPostgresExecutor {
 
 #[derive(Clone)]
 pub struct LivePostgresExecutor {
-    runtime: Arc<tokio::runtime::Runtime>,
     client: Arc<tokio_postgres::Client>,
 }
 
@@ -1376,6 +1713,12 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .into_iter()
                 .cloned()
                 .collect(),
+            value if value == sql::LIST_SERVICE_INSTANCES => state
+                .service_instances
+                .values()
+                .filter(|row| row[2] == params[0])
+                .cloned()
+                .collect(),
             value if value == sql::GET_RUNTIME_BINDING => state
                 .runtime_bindings
                 .get(&params[0])
@@ -1386,6 +1729,12 @@ impl PostgresExecutor for MemoryPostgresExecutor {
                 .runtime_bindings
                 .values()
                 .filter(|row| row[1] == params[0])
+                .cloned()
+                .collect(),
+            value if value == sql::LIST_RUNTIME_BINDINGS_FOR_OBJECT => state
+                .runtime_bindings
+                .values()
+                .filter(|row| row[2] == params[0] && row[3] == params[1])
                 .cloned()
                 .collect(),
             value if value == sql::GET_SUBJECT => state
@@ -1447,35 +1796,19 @@ impl PostgresExecutor for MemoryPostgresExecutor {
 }
 
 impl LivePostgresExecutor {
-    pub fn new(connection_string: impl Into<String>) -> StorageResult<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|err| operation_failed(format!("build tokio runtime: {err}")))?;
+    pub async fn new(connection_string: impl Into<String>) -> StorageResult<Self> {
         let connection_string = connection_string.into();
-        let (client, connection) = runtime
-            .block_on(tokio_postgres::connect(connection_string.as_str(), NoTls))
+        let (client, connection) = tokio_postgres::connect(connection_string.as_str(), NoTls)
+            .await
             .map_err(|err| operation_failed(format!("connect postgres: {err}")))?;
 
-        runtime.spawn(async move {
+        tokio::spawn(async move {
             let _ = connection.await;
         });
 
         Ok(Self {
-            runtime: Arc::new(runtime),
             client: Arc::new(client),
         })
-    }
-
-    fn run_sync<F, T>(&self, future: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.runtime.block_on(future))
-        } else {
-            self.runtime.block_on(future)
-        }
     }
 
     async fn query_rows_async(
@@ -1483,8 +1816,10 @@ impl LivePostgresExecutor {
         sql: &str,
         params: &[String],
     ) -> StorageResult<Vec<Vec<String>>> {
-        let bind_params: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|value| value as &(dyn ToSql + Sync)).collect();
+        let bind_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|value| value as &(dyn ToSql + Sync))
+            .collect();
         let rows = self
             .client
             .query(sql, &bind_params)
@@ -1494,8 +1829,10 @@ impl LivePostgresExecutor {
     }
 
     async fn exec_async(&self, sql: &str, params: &[String]) -> StorageResult<u64> {
-        let bind_params: Vec<&(dyn ToSql + Sync)> =
-            params.iter().map(|value| value as &(dyn ToSql + Sync)).collect();
+        let bind_params: Vec<&(dyn ToSql + Sync)> = params
+            .iter()
+            .map(|value| value as &(dyn ToSql + Sync))
+            .collect();
         self.client
             .execute(sql, &bind_params)
             .await
@@ -1510,52 +1847,51 @@ impl LivePostgresExecutor {
     }
 }
 
-impl PostgresExecutor for LivePostgresExecutor {
-    fn exec(&self, sql: &str, params: &[String]) -> StorageResult<u64> {
-        let client = self.client.clone();
-        let bind_params: Vec<&(dyn ToSql + Sync)> = params
-            .iter()
-            .map(|value| value as &(dyn ToSql + Sync))
-            .collect();
-
-        self.run_sync(async move {
-            client
-                .execute(sql, &bind_params)
-                .await
-                .map_err(|err| operation_failed(format!("execute postgres sql: {err}")))
-        })
-    }
-
-    fn query_rows(&self, sql: &str, params: &[String]) -> StorageResult<Vec<Vec<String>>> {
-        let client = self.client.clone();
-        let bind_params: Vec<&(dyn ToSql + Sync)> = params
-            .iter()
-            .map(|value| value as &(dyn ToSql + Sync))
-            .collect();
-
-        self.run_sync(async move {
-            let rows = client
-                .query(sql, &bind_params)
-                .await
-                .map_err(|err| operation_failed(format!("query postgres sql: {err}")))?;
-
-            rows.into_iter().map(row_to_strings).collect()
-        })
-    }
-
-    fn exec_batch(&self, sql: &str) -> StorageResult<()> {
-        let client = self.client.clone();
-
-        self.run_sync(async move {
-            client
-                .batch_execute(sql)
-                .await
-                .map_err(|err| operation_failed(format!("execute postgres batch sql: {err}")))
-        })
-    }
-}
-
 impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
+    async fn upsert_business(
+        &self,
+        _business: &topology_domain::BusinessDomain,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_business(
+        &self,
+        _business_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::BusinessDomain>> {
+        Ok(None)
+    }
+
+    async fn list_businesses(
+        &self,
+        _tenant_id: TenantId,
+        _page: Page,
+    ) -> StorageResult<Vec<topology_domain::BusinessDomain>> {
+        Ok(Vec::new())
+    }
+
+    async fn upsert_system(&self, _system: &topology_domain::SystemBoundary) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_system(
+        &self,
+        _system_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::SystemBoundary>> {
+        Ok(None)
+    }
+
+    async fn upsert_subsystem(&self, _subsystem: &topology_domain::Subsystem) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_subsystem(
+        &self,
+        _subsystem_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::Subsystem>> {
+        Ok(None)
+    }
+
     async fn upsert_service(&self, service: &ServiceEntity) -> StorageResult<()> {
         self.executor
             .exec_async(
@@ -1567,7 +1903,10 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
                         .business_id
                         .map(|id| id.to_string())
                         .unwrap_or_default(),
-                    service.system_id.map(|id| id.to_string()).unwrap_or_default(),
+                    service
+                        .system_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_default(),
                     service
                         .subsystem_id
                         .map(|id| id.to_string())
@@ -1817,6 +2156,74 @@ impl AsyncCatalogStore for PostgresTopologyStore<LivePostgresExecutor> {
             .await?;
         rows.into_iter().map(|row| decode_subject(&row)).collect()
     }
+
+    async fn upsert_cluster(
+        &self,
+        _cluster: &topology_domain::ClusterInventory,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_cluster(
+        &self,
+        _cluster_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::ClusterInventory>> {
+        Ok(None)
+    }
+
+    async fn upsert_namespace(
+        &self,
+        _namespace: &topology_domain::NamespaceInventory,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_namespace(
+        &self,
+        _namespace_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::NamespaceInventory>> {
+        Ok(None)
+    }
+
+    async fn upsert_workload(
+        &self,
+        _workload: &topology_domain::WorkloadEntity,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_workload(
+        &self,
+        _workload_id: Uuid,
+    ) -> StorageResult<Option<topology_domain::WorkloadEntity>> {
+        Ok(None)
+    }
+
+    async fn upsert_pod(&self, _pod: &topology_domain::PodInventory) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn get_pod(&self, _pod_id: Uuid) -> StorageResult<Option<topology_domain::PodInventory>> {
+        Ok(None)
+    }
+
+    async fn get_network_domain(
+        &self,
+        network_domain_id: Uuid,
+    ) -> StorageResult<Option<NetworkDomain>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                "SELECT network_domain_id, tenant_id, environment_id, name, kind, description, created_at, updated_at FROM network_domain WHERE network_domain_id = $1",
+                &[network_domain_id.to_string()],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_network_domain(&row))
+            .transpose()?)
+    }
 }
 
 impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
@@ -1883,10 +2290,7 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
             .collect()
     }
 
-    async fn upsert_process_runtime_state(
-        &self,
-        state: &ProcessRuntimeState,
-    ) -> StorageResult<()> {
+    async fn upsert_process_runtime_state(&self, state: &ProcessRuntimeState) -> StorageResult<()> {
         self.executor
             .exec_async(
                 sql::UPSERT_PROCESS_RUNTIME_STATE,
@@ -1936,10 +2340,7 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
             .collect()
     }
 
-    async fn upsert_service_instance(
-        &self,
-        instance: &ServiceInstance,
-    ) -> StorageResult<()> {
+    async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()> {
         self.executor
             .exec_async(
                 sql::UPSERT_SERVICE_INSTANCE,
@@ -1978,6 +2379,27 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
             .transpose()?)
     }
 
+    async fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceInstance>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_SERVICE_INSTANCES,
+                &[
+                    service_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_service_instance(&row))
+            .collect()
+    }
+
     async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()> {
         self.executor
             .exec_async(
@@ -2004,10 +2426,7 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
         Ok(())
     }
 
-    async fn get_runtime_binding(
-        &self,
-        binding_id: Uuid,
-    ) -> StorageResult<Option<RuntimeBinding>> {
+    async fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>> {
         let rows = self
             .executor
             .query_rows_async(sql::GET_RUNTIME_BINDING, &[binding_id.to_string()])
@@ -2040,7 +2459,34 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
             .collect()
     }
 
-    async fn list_host_net_assocs(&self, host_id: Uuid, page: Page) -> StorageResult<Vec<HostNetAssoc>> {
+    async fn list_runtime_bindings_for_object(
+        &self,
+        object_type: RuntimeObjectType,
+        object_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                sql::LIST_RUNTIME_BINDINGS_FOR_OBJECT,
+                &[
+                    format!("{:?}", object_type),
+                    object_id.to_string(),
+                    page.limit.to_string(),
+                    page.offset.to_string(),
+                ],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| decode_runtime_binding(&row))
+            .collect()
+    }
+
+    async fn list_host_net_assocs(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostNetAssoc>> {
         let rows = self
             .executor
             .query_rows_async(
@@ -2080,6 +2526,20 @@ impl AsyncRuntimeStore for PostgresTopologyStore<LivePostgresExecutor> {
             )
             .await?;
         Ok(())
+    }
+
+    async fn upsert_workload_pod_membership(
+        &self,
+        _membership: &topology_domain::WorkloadPodMembership,
+    ) -> StorageResult<()> {
+        Err(not_configured())
+    }
+
+    async fn upsert_pod_placement(
+        &self,
+        _placement: &topology_domain::PodPlacement,
+    ) -> StorageResult<()> {
+        Err(not_configured())
     }
 }
 
@@ -2135,6 +2595,24 @@ impl AsyncGovernanceStore for PostgresTopologyStore<LivePostgresExecutor> {
             .map(|row| decode_responsibility_assignment(&row))
             .collect()
     }
+
+    async fn get_responsibility_assignment(
+        &self,
+        assignment_id: Uuid,
+    ) -> StorageResult<Option<ResponsibilityAssignment>> {
+        let rows = self
+            .executor
+            .query_rows_async(
+                "SELECT assignment_id, tenant_id, subject_id, target_kind, target_id, role, source, valid_from, valid_to, created_at, updated_at FROM responsibility_assignment WHERE assignment_id = $1",
+                &[assignment_id.to_string()],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_responsibility_assignment(&row))
+            .transpose()?)
+    }
 }
 
 impl AsyncIngestStore for PostgresTopologyStore<LivePostgresExecutor> {
@@ -2155,6 +2633,18 @@ impl AsyncIngestStore for PostgresTopologyStore<LivePostgresExecutor> {
             )
             .await?;
         Ok(())
+    }
+
+    async fn get_ingest_job(&self, ingest_id: &str) -> StorageResult<Option<IngestJobEntry>> {
+        let rows = self
+            .executor
+            .query_rows_async(sql::GET_INGEST_JOB, &[ingest_id.to_string()])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .next()
+            .map(|row| decode_ingest_job(&row))
+            .transpose()?)
     }
 }
 
@@ -2789,7 +3279,9 @@ mod tests {
         RuntimeStore::upsert_runtime_binding(&store, &binding).unwrap();
         CatalogStore::upsert_subject(&store, &subject).unwrap();
         GovernanceStore::upsert_responsibility_assignment(&store, &assignment).unwrap();
-        IngestStore::record_ingest_job(&store, IngestJobEntry {
+        IngestStore::record_ingest_job(
+            &store,
+            IngestJobEntry {
                 ingest_id: "ing-1".to_string(),
                 tenant_id,
                 source_name: "demo".to_string(),
@@ -2798,19 +3290,26 @@ mod tests {
                 status: "accepted".to_string(),
                 payload_ref: None,
                 error: None,
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
 
-        assert!(CatalogStore::get_host(&store, host.host_id).unwrap().is_some());
+        assert!(
+            CatalogStore::get_host(&store, host.host_id)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             CatalogStore::list_hosts(&store, tenant_id, Page::default())
                 .unwrap()
                 .len(),
             1
         );
-        assert!(CatalogStore::get_service(&store, service.service_id)
-            .unwrap()
-            .is_some());
+        assert!(
+            CatalogStore::get_service(&store, service.service_id)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             CatalogStore::list_services(&store, tenant_id, Page::default())
                 .unwrap()
@@ -2849,9 +3348,11 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        assert!(CatalogStore::get_subject(&store, subject.subject_id)
-            .unwrap()
-            .is_some());
+        assert!(
+            CatalogStore::get_subject(&store, subject.subject_id)
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(
             GovernanceStore::list_responsibility_assignments_for_target(
                 &store,
@@ -2859,12 +3360,14 @@ mod tests {
                 host.host_id,
                 Page::default(),
             )
-                .unwrap()
-                .len(),
+            .unwrap()
+            .len(),
             1
         );
-        assert!(IngestStore::get_ingest_job(&store, "ing-1")
-            .unwrap()
-            .is_some());
+        assert!(
+            IngestStore::get_ingest_job(&store, "ing-1")
+                .unwrap()
+                .is_some()
+        );
     }
 }

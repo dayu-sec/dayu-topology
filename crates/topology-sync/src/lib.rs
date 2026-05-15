@@ -10,11 +10,11 @@ use topology_api::TopologyIngestService;
 use topology_domain::{
     DayuInputEnvelope, EnvironmentId, IngestEnvelope, IngestMode, ObservedAt, SourceKind, TenantId,
 };
+use topology_storage::AsyncIngestStore;
 use topology_storage::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
     IngestStore, Page, RuntimeStore,
 };
-use topology_storage::AsyncIngestStore;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,14 +90,16 @@ pub struct JsonlImportService<S> {
     store: S,
 }
 
+impl<S> JsonlImportService<S> {
+    pub fn new(store: S) -> Self {
+        Self { store }
+    }
+}
+
 impl<S> JsonlImportService<S>
 where
     S: Clone + CatalogStore + RuntimeStore + GovernanceStore + IngestStore,
 {
-    pub fn new(store: S) -> Self {
-        Self { store }
-    }
-
     pub fn import_files(
         &self,
         tenant_id: TenantId,
@@ -170,8 +172,10 @@ impl Default for JsonlImportSummary {
 }
 
 fn load_jsonl_lines(path: &PathBuf) -> SyncResult<Vec<JsonlInputLine>> {
-    let file = fs::File::open(path)
-        .source_err(SyncReason::InputLoadFailed, format!("read {}", path.display()))?;
+    let file = fs::File::open(path).source_err(
+        SyncReason::InputLoadFailed,
+        format!("read {}", path.display()),
+    )?;
     let reader = BufReader::new(file);
     let mut lines = Vec::new();
 
@@ -304,8 +308,9 @@ where
     };
     let hosts = CatalogStore::list_hosts(store, tenant_id, full_page).conv_err()?;
     summary.host_count = hosts.len();
-    summary.network_count =
-        CatalogStore::list_network_segments(store, tenant_id, full_page).conv_err()?.len();
+    summary.network_count = CatalogStore::list_network_segments(store, tenant_id, full_page)
+        .conv_err()?
+        .len();
     summary.process_count = hosts
         .iter()
         .try_fold(0usize, |acc, host| {

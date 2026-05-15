@@ -14,17 +14,22 @@ export type NodeKind =
   | 'ProcessRuntime'
   | 'ProcessSummary'
   | 'ProcessGroup'
+  | 'ServiceEntity'
+  | 'ServiceInstance'
   | 'Subject';
 
 // ---- Edge kind (V1: only 2 relation types) ----
 export type EdgeKind =
   | 'host_network_assoc'
   | 'host_process_assoc'
+  | 'host_service_assoc'
+  | 'service_instance_assoc'
+  | 'process_service_assoc'
   | 'responsibility_assignment';
 
 // ---- Layer → NodeKind mapping ----
 export const LAYER_NODE_KINDS: Record<LayerKind, readonly NodeKind[]> = {
-  resource:   ['HostInventory', 'NetworkSegment', 'ProcessRuntime', 'ProcessSummary', 'ProcessGroup'],
+  resource:   ['HostInventory', 'NetworkSegment', 'ProcessRuntime', 'ProcessSummary', 'ProcessGroup', 'ServiceEntity', 'ServiceInstance'],
   governance: ['Subject'],
 };
 
@@ -59,6 +64,79 @@ export type HostProcessTopologyGraph = {
   };
 };
 
+export type HostTopologyHost = {
+  id: string;
+  hostName: string;
+  machineId?: string | null;
+  osName?: string | null;
+  osVersion?: string | null;
+};
+
+export type ProcessStateCountDto = {
+  state: string;
+  count: number;
+};
+
+export type HostProcessGroupDto = {
+  executable: string;
+  displayName: string;
+  processCount: number;
+  totalMemoryRssKiB: number;
+  dominantState?: string | null;
+  stateSummary: ProcessStateCountDto[];
+};
+
+export type HostTopologyServiceInstance = {
+  instance: Record<string, unknown>;
+  bindings: Record<string, unknown>[];
+  processes: Record<string, unknown>[];
+};
+
+export type HostTopologyService = {
+  service: Record<string, unknown>;
+  instances: HostTopologyServiceInstance[];
+};
+
+export type HostTopologyDto = {
+  host: HostTopologyHost;
+  latestRuntime?: Record<string, unknown> | null;
+  processGroups: Record<string, unknown>[];
+  processes: Record<string, unknown>[];
+  networkSegments: Record<string, unknown>[];
+  networkAssocs: Record<string, unknown>[];
+  services: HostTopologyService[];
+  assignments: Record<string, unknown>[];
+  generatedAt: string;
+};
+
+export type HostProcessOverviewDto = {
+  host: HostTopologyHost;
+  totalProcesses: number;
+  totalGroups: number;
+  topGroups: HostProcessGroupDto[];
+  truncatedGroupCount: number;
+  generatedAt: string;
+};
+
+export type HostProcessGroupsPageDto = {
+  host: HostTopologyHost;
+  totalProcesses: number;
+  totalGroups: number;
+  groups: HostProcessGroupDto[];
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  generatedAt: string;
+};
+
+export type LoadedProcessGroupsState = {
+  groups: HostProcessGroupDto[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+  totalGroups: number;
+};
+
 // ---- API response wrapper ----
 export type ApiResponse<T> =
   | { status: 'ok'; data: T }
@@ -67,6 +145,7 @@ export type ApiResponse<T> =
 // ---- App state (single graph view, no multi-view routing in V1) ----
 export type AppState = {
   graph: HostProcessTopologyGraph | null;
+  hostTopology: HostTopologyDto | null;
   loading: boolean;
   error: string | null;
 
@@ -79,6 +158,7 @@ export type AppState = {
 export type AppAction =
   | { type: 'FETCH_GRAPH_START' }
   | { type: 'FETCH_GRAPH_SUCCESS'; graph: HostProcessTopologyGraph }
+  | { type: 'FETCH_HOST_TOPOLOGY_SUCCESS'; hostTopology: HostTopologyDto | null }
   | { type: 'FETCH_GRAPH_ERROR'; error: string }
   | { type: 'SELECT_NODE'; nodeId: string | null }
   | { type: 'TOGGLE_LAYER'; layer: LayerKind }

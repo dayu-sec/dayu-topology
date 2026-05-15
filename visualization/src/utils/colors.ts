@@ -18,6 +18,8 @@ export const NODE_SHAPES: Record<NodeKind, string> = {
   ProcessRuntime: 'round-rectangle',
   ProcessSummary: 'round-hexagon',
   ProcessGroup:   'ellipse',
+  ServiceEntity:  'round-tag',
+  ServiceInstance:'round-octagon',
   Subject:        'ellipse',
 };
 

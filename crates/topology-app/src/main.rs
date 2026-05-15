@@ -1,6 +1,7 @@
 use topology_app::{MonolithRunResult, TopologyAppBuilder, parse_monolith_input};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (mode, input) = match parse_monolith_input(&args) {
         Ok(parsed) => parsed,
@@ -10,15 +11,28 @@ fn main() {
         }
     };
 
-    let app = match TopologyAppBuilder::new().with_mode(mode).build() {
-        Ok(app) => app,
-        Err(err) => {
-            eprintln!("dayu-topology monolith failed to initialize: {err}");
-            std::process::exit(1);
-        }
+    let builder = TopologyAppBuilder::new().with_mode(mode);
+    let app = match mode {
+        topology_app::MonolithMode::PostgresLive => match builder.build_async().await {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("dayu-topology monolith failed to initialize: {err}");
+                std::process::exit(1);
+            }
+        },
+        _ => match builder.build() {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("dayu-topology monolith failed to initialize: {err}");
+                std::process::exit(1);
+            }
+        },
     };
 
-    let result = app.run(input);
+    let result = match mode {
+        topology_app::MonolithMode::PostgresLive => app.run_async(input).await,
+        _ => app.run(input),
+    };
 
     match result {
         Ok(MonolithRunResult::Single(summary)) => {

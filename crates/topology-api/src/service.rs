@@ -6,24 +6,25 @@ use chrono::{DateTime, Utc};
 use orion_error::conversion::ConvErr;
 use serde::{Deserialize, Serialize};
 use topology_domain::{
-    AgentHealth, BindingScope, Confidence, DayuInputEnvelope, HostCandidate, HostRuntimeState,
-    HostTelemetryCandidate, IngestEnvelope, NetworkSegmentCandidate, ProcessRuntimeCandidate,
-    ProcessRuntimeState, ProcessTelemetryCandidate, ResponsibilityAssignment, RuntimeBinding,
-    RuntimeObjectType, ServiceEntity, ServiceInstance, Subject, SubjectCandidate, ValidityWindow,
+    AgentHealth, BindingScope, BusinessCatalogCandidate, Confidence, DayuInputEnvelope,
+    HostCandidate, HostRuntimeState, HostTelemetryCandidate, IngestEnvelope,
+    NetworkSegmentCandidate, ProcessRuntimeCandidate, ProcessRuntimeState,
+    ProcessTelemetryCandidate, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
+    ServiceEntity, ServiceInstance, Subject, SubjectCandidate, ValidityWindow,
 };
+use topology_storage::AsyncIngestStore;
 use topology_storage::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
     InMemoryTopologyStore, IngestJobEntry, IngestStore, RuntimeStore, StorageResult,
 };
-use topology_storage::AsyncIngestStore;
 use uuid::Uuid;
 
 use crate::error::{ApiResult, missing_payload, recorder_failed, unsupported_ingest_mode};
 use crate::ingest::{
-    IngestJobRecord, IngestJobStatus, extract_host_candidates, extract_host_telemetry_candidates,
-    extract_network_segment_candidates, extract_process_runtime_candidates,
-    extract_process_telemetry_candidates, extract_responsibility_assignment_candidates,
-    extract_subject_candidates,
+    IngestJobRecord, IngestJobStatus, extract_business_catalog_candidates, extract_host_candidates,
+    extract_host_telemetry_candidates, extract_network_segment_candidates,
+    extract_process_runtime_candidates, extract_process_telemetry_candidates,
+    extract_responsibility_assignment_candidates, extract_subject_candidates,
 };
 use crate::pipeline::{InMemoryCatalog, materialize_host_network, resolve_host_candidate};
 
@@ -40,14 +41,16 @@ pub struct TopologyIngestService<S> {
     store: S,
 }
 
+impl<S> TopologyIngestService<S> {
+    pub fn new(store: S) -> Self {
+        Self { store }
+    }
+}
+
 impl<S> TopologyIngestService<S>
 where
     S: CatalogStore + RuntimeStore + IngestStore + GovernanceStore,
 {
-    pub fn new(store: S) -> Self {
-        Self { store }
-    }
-
     pub fn submit_and_materialize(
         &self,
         envelope: IngestEnvelope,
@@ -58,6 +61,9 @@ where
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+        let business_catalog = extract_business_catalog_candidates(&envelope)
+            .map(|result| result.candidates)
+            .unwrap_or_default();
         let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
         let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
         let subjects = extract_subject_candidates(&envelope)
@@ -68,6 +74,7 @@ where
             .unwrap_or_default();
 
         let mut catalog = hydrate_catalog(&self.store, envelope.tenant_id).conv_err()?;
+        materialize_business_catalog(&self.store, business_catalog, accepted_at).conv_err()?;
         let materialized =
             materialize_candidates(&self.store, &mut catalog, hosts, networks, accepted_at)
                 .conv_err()?;
@@ -124,6 +131,9 @@ where
         let hosts = extract_host_candidates(&envelope)?.candidates;
         let networks = extract_network_segment_candidates(&envelope)?.candidates;
         let processes = extract_process_runtime_candidates(&envelope)?.candidates;
+        let business_catalog = extract_business_catalog_candidates(&envelope)
+            .map(|result| result.candidates)
+            .unwrap_or_default();
         let host_telemetry = extract_host_telemetry_candidates(&envelope)?.candidates;
         let process_telemetry = extract_process_telemetry_candidates(&envelope)?.candidates;
         let subjects = extract_subject_candidates(&envelope)
@@ -136,15 +146,13 @@ where
         let mut catalog = hydrate_catalog_async(&self.store, envelope.tenant_id)
             .await
             .conv_err()?;
-        let materialized = materialize_candidates_async(
-            &self.store,
-            &mut catalog,
-            hosts,
-            networks,
-            accepted_at,
-        )
-        .await
-        .conv_err()?;
+        materialize_business_catalog_async(&self.store, business_catalog, accepted_at)
+            .await
+            .conv_err()?;
+        let materialized =
+            materialize_candidates_async(&self.store, &mut catalog, hosts, networks, accepted_at)
+                .await
+                .conv_err()?;
         materialize_processes_async(&self.store, &mut catalog, processes, accepted_at)
             .await
             .conv_err()?;
@@ -308,9 +316,12 @@ async fn hydrate_catalog_async<S>(
 where
     S: AsyncCatalogStore + AsyncRuntimeStore,
 {
-    let hosts =
-        topology_storage::AsyncCatalogStore::list_hosts(store, tenant_id, topology_storage::Page::default())
-            .await?;
+    let hosts = topology_storage::AsyncCatalogStore::list_hosts(
+        store,
+        tenant_id,
+        topology_storage::Page::default(),
+    )
+    .await?;
     let network_segments = topology_storage::AsyncCatalogStore::list_network_segments(
         store,
         tenant_id,
@@ -416,8 +427,11 @@ where
                 topology_storage::AsyncCatalogStore::upsert_network_domain(store, domain).await?;
             }
             topology_storage::AsyncCatalogStore::upsert_host(store, &materialized.host).await?;
-            topology_storage::AsyncCatalogStore::upsert_network_segment(store, &materialized.segment)
-                .await?;
+            topology_storage::AsyncCatalogStore::upsert_network_segment(
+                store,
+                &materialized.segment,
+            )
+            .await?;
             if let Some(assoc) = &materialized.assoc {
                 topology_storage::AsyncRuntimeStore::upsert_host_net_assoc(store, assoc).await?;
                 assoc_count += 1;
@@ -1086,6 +1100,92 @@ where
     Ok(())
 }
 
+fn materialize_business_catalog<S>(
+    store: &S,
+    candidates: Vec<BusinessCatalogCandidate>,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: CatalogStore,
+{
+    for candidate in candidates {
+        let Some(service_name) = candidate.service_name.as_deref() else {
+            continue;
+        };
+        let service_ref = candidate
+            .external_ref
+            .clone()
+            .unwrap_or_else(|| service_name.to_string());
+        let service = ServiceEntity {
+            service_id: stable_uuid(
+                "service",
+                &format!("{}:{}", candidate.tenant_id.0, service_ref),
+            ),
+            tenant_id: candidate.tenant_id,
+            business_id: None,
+            system_id: None,
+            subsystem_id: None,
+            name: service_name.to_string(),
+            namespace: None,
+            service_type: candidate
+                .service_type
+                .unwrap_or(topology_domain::ServiceType::Application),
+            boundary: candidate
+                .boundary
+                .unwrap_or(topology_domain::ServiceBoundary::Internal),
+            provider: None,
+            external_ref: candidate.external_ref.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        store.upsert_service(&service)?;
+    }
+    Ok(())
+}
+
+async fn materialize_business_catalog_async<S>(
+    store: &S,
+    candidates: Vec<BusinessCatalogCandidate>,
+    now: DateTime<Utc>,
+) -> StorageResult<()>
+where
+    S: AsyncCatalogStore,
+{
+    for candidate in candidates {
+        let Some(service_name) = candidate.service_name.as_deref() else {
+            continue;
+        };
+        let service_ref = candidate
+            .external_ref
+            .clone()
+            .unwrap_or_else(|| service_name.to_string());
+        let service = ServiceEntity {
+            service_id: stable_uuid(
+                "service",
+                &format!("{}:{}", candidate.tenant_id.0, service_ref),
+            ),
+            tenant_id: candidate.tenant_id,
+            business_id: None,
+            system_id: None,
+            subsystem_id: None,
+            name: service_name.to_string(),
+            namespace: None,
+            service_type: candidate
+                .service_type
+                .unwrap_or(topology_domain::ServiceType::Application),
+            boundary: candidate
+                .boundary
+                .unwrap_or(topology_domain::ServiceBoundary::Internal),
+            provider: None,
+            external_ref: candidate.external_ref.clone(),
+            created_at: now,
+            updated_at: now,
+        };
+        topology_storage::AsyncCatalogStore::upsert_service(store, &service).await?;
+    }
+    Ok(())
+}
+
 async fn materialize_process_binding_async<S>(
     store: &S,
     candidate: &ProcessRuntimeCandidate,
@@ -1191,9 +1291,12 @@ async fn find_service_by_ref_async<S>(
 where
     S: AsyncCatalogStore,
 {
-    let services =
-        topology_storage::AsyncCatalogStore::list_services(store, tenant_id, topology_storage::Page::default())
-            .await?;
+    let services = topology_storage::AsyncCatalogStore::list_services(
+        store,
+        tenant_id,
+        topology_storage::Page::default(),
+    )
+    .await?;
     Ok(services.into_iter().find(|service| {
         service.external_ref.as_deref() == Some(service_ref) || service.name == service_ref
     }))
@@ -1322,9 +1425,12 @@ where
         persisted_subjects.push(subject);
     }
 
-    let hosts =
-        topology_storage::AsyncCatalogStore::list_hosts(store, tenant_id, topology_storage::Page::default())
-            .await?;
+    let hosts = topology_storage::AsyncCatalogStore::list_hosts(
+        store,
+        tenant_id,
+        topology_storage::Page::default(),
+    )
+    .await?;
     let segments = topology_storage::AsyncCatalogStore::list_network_segments(
         store,
         tenant_id,
@@ -1444,8 +1550,8 @@ mod tests {
                 tenant_id,
                 topology_storage::Page::default(),
             )
-                .unwrap()
-                .len(),
+            .unwrap()
+            .len(),
             1
         );
         assert_eq!(
@@ -1454,13 +1560,15 @@ mod tests {
                 tenant_id,
                 topology_storage::Page::default(),
             )
-                .unwrap()
-                .len(),
+            .unwrap()
+            .len(),
             1
         );
-        assert!(IngestStore::get_ingest_job(service.store(), "ing-1")
-            .unwrap()
-            .is_some());
+        assert!(
+            IngestStore::get_ingest_job(service.store(), "ing-1")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -1501,19 +1609,19 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
         let segment = CatalogStore::list_network_segments(
             service.store(),
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
 
         let host_view = TopologyQueryService::new(service.store().clone())
             .host_topology_view(host.host_id)
@@ -1582,10 +1690,10 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
         let views = TopologyQueryService::new(service.store().clone())
             .effective_responsibility_view(topology_domain::ObjectKind::Host, host.host_id)
             .unwrap();
@@ -1652,10 +1760,10 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
         assert_eq!(segment.name, "10.4.0.0/24");
         assert_eq!(segment.cidr.as_deref(), Some("10.4.0.0/24"));
     }
@@ -1691,9 +1799,12 @@ mod tests {
         assert_eq!(summary.network_count, 0);
         assert_eq!(summary.assoc_count, 0);
 
-        let hosts =
-            CatalogStore::list_hosts(service.store(), tenant_id, topology_storage::Page::default())
-                .unwrap();
+        let hosts = CatalogStore::list_hosts(
+            service.store(),
+            tenant_id,
+            topology_storage::Page::default(),
+        )
+        .unwrap();
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].host_name, "node-host-only");
         assert_eq!(hosts[0].machine_id.as_deref(), Some("machine-host-only"));
@@ -1757,10 +1868,10 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|host| host.host_name == "node-07")
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|host| host.host_name == "node-07")
+        .unwrap();
         let host_view = TopologyQueryService::new(service.store().clone())
             .host_topology_view(host.host_id)
             .unwrap()
@@ -1830,16 +1941,16 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|host| host.host_name == "node-09")
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|host| host.host_name == "node-09")
+        .unwrap();
         let processes = RuntimeStore::list_process_runtime_states(
             service.store(),
             host.host_id,
             topology_storage::Page::default(),
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].pid, 231);
@@ -1899,16 +2010,16 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|host| host.host_name == "node-09")
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|host| host.host_name == "node-09")
+        .unwrap();
         let processes = RuntimeStore::list_process_runtime_states(
             service.store(),
             host.host_id,
             topology_storage::Page::default(),
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].pid, 231);
@@ -1992,16 +2103,16 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|host| host.host_name == "node-11")
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|host| host.host_name == "node-11")
+        .unwrap();
         let processes = RuntimeStore::list_process_runtime_states(
             service.store(),
             host.host_id,
             topology_storage::Page::default(),
         )
-            .unwrap();
+        .unwrap();
 
         assert_eq!(processes.len(), 1);
         assert_eq!(processes[0].memory_rss_kib, Some(7456));
@@ -2017,7 +2128,9 @@ mod tests {
         let tenant_id = TenantId(Uuid::new_v4());
         let now = Utc::now();
 
-        CatalogStore::upsert_service(service.store(), &topology_domain::ServiceEntity {
+        CatalogStore::upsert_service(
+            service.store(),
+            &topology_domain::ServiceEntity {
                 service_id: Uuid::new_v4(),
                 tenant_id,
                 business_id: None,
@@ -2031,8 +2144,9 @@ mod tests {
                 external_ref: Some("svc:sshd".to_string()),
                 created_at: now,
                 updated_at: now,
-            })
-            .unwrap();
+            },
+        )
+        .unwrap();
 
         let host_envelope = IngestEnvelope {
             ingest_id: "ing-host-for-binding".to_string(),
@@ -2085,25 +2199,25 @@ mod tests {
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|item| item.external_ref.as_deref() == Some("svc:sshd"))
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|item| item.external_ref.as_deref() == Some("svc:sshd"))
+        .unwrap();
         let host = CatalogStore::list_hosts(
             service.store(),
             tenant_id,
             topology_storage::Page::default(),
         )
-            .unwrap()
-            .into_iter()
-            .find(|host| host.host_name == "node-10")
-            .unwrap();
+        .unwrap()
+        .into_iter()
+        .find(|host| host.host_name == "node-10")
+        .unwrap();
         let processes = RuntimeStore::list_process_runtime_states(
             service.store(),
             host.host_id,
             topology_storage::Page::default(),
         )
-            .unwrap();
+        .unwrap();
         assert_eq!(processes.len(), 1);
 
         let instance_id = stable_uuid(

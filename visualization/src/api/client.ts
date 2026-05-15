@@ -1,4 +1,10 @@
-import type { ApiResponse, HostProcessTopologyGraph } from '../types/domain';
+import type {
+  ApiResponse,
+  HostProcessGroupsPageDto,
+  HostProcessOverviewDto,
+  HostProcessTopologyGraph,
+  HostTopologyDto,
+} from '../types/domain';
 
 const BASE = '/api';
 
@@ -22,8 +28,12 @@ async function get<T>(path: string, params?: Record<string, string>): Promise<Ap
 }
 
 // V1 required
-export async function fetchHostTopology(hostId: string): Promise<ApiResponse<HostProcessTopologyGraph>> {
-  return get<HostProcessTopologyGraph>(`/topology/host/${hostId}`);
+export async function fetchHostTopology(hostId: string): Promise<ApiResponse<HostTopologyDto>> {
+  return get<HostTopologyDto>(`/topology/host/${hostId}`);
+}
+
+export async function fetchFirstHostTopology(): Promise<ApiResponse<HostTopologyDto>> {
+  return get<HostTopologyDto>('/topology/host/first');
 }
 
 // V1 optional enhancement
@@ -56,4 +66,24 @@ export async function fetchHostProcessTopology(hostId: string): Promise<ApiRespo
 
 export async function fetchFirstHostProcessTopology(): Promise<ApiResponse<HostProcessTopologyGraph>> {
   return get<HostProcessTopologyGraph>('/topology/host/first/processes');
+}
+
+export async function fetchHostProcessOverview(
+  hostId: string,
+  topN = 12,
+): Promise<ApiResponse<HostProcessOverviewDto>> {
+  return get<HostProcessOverviewDto>(`/topology/host/${hostId}/process-overview`, {
+    top_n: String(topN),
+  });
+}
+
+export async function fetchHostProcessGroupsPage(
+  hostId: string,
+  limit = 50,
+  offset = 0,
+): Promise<ApiResponse<HostProcessGroupsPageDto>> {
+  return get<HostProcessGroupsPageDto>(`/topology/host/${hostId}/process-groups`, {
+    limit: String(limit),
+    offset: String(offset),
+  });
 }
