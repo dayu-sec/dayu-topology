@@ -130,6 +130,7 @@ pub fn protocol_code(identity_code: &str) -> &'static str {
         "sys.dayu.app.input_load_failed" => "input.raw_parse_failed",
         "logic.dayu.app.materialization_missing" => "system.internal",
         "sys.dayu.sync.fetch_failed" => "sync.fetch_failed",
+        "sys.dayu.sync.input_load_failed" => "input.raw_parse_failed",
         "biz.dayu.sync.cursor_conflict" => "sync.cursor_conflict",
         "sys.dayu.sync.rate_limited" => "sync.rate_limited",
         _ => "system.internal",

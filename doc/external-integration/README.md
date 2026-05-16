@@ -7,6 +7,7 @@
 - [`input-taxonomy-and-style.md`](./input-taxonomy-and-style.md)：基于 `doc/model` 的输入分类、JSON 样式和 adapter 输出口径
 - [`external-glossary.md`](./external-glossary.md)：外部对接术语、跨系统术语对齐和禁止混用规则；不包含 dayu 内部 pipeline 对象
 - [`external-input-spec.md`](./external-input-spec.md)：外部 raw input envelope 与来源协议规范
+- [`warp-insight-to-dayu-dataflow.md`](./warp-insight-to-dayu-dataflow.md)：`warp-insight` 经 `warp-parse` 进入 `dayu-topology` 的当前真实数据流、导入链路和落库状态
 - [`warp-insight-adapter-spec.md`](./warp-insight-adapter-spec.md)：`warp-insight` discovery 快照到 dayu candidate / evidence 的映射规范
 - [`file-ingest-spec.md`](./file-ingest-spec.md)：adapter 之后的 normalized batch import payload 规范
 - [`../internal/processing-glossary.md`](../internal/processing-glossary.md)：dayu 内部 adapter / resolver / materializer 术语、短名和字段命名规则

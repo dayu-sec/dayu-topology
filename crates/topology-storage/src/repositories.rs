@@ -1,8 +1,8 @@
 use topology_domain::{
     BusinessDomain, ClusterInventory, ExternalIdentityLink, ExternalSyncCursor, HostInventory,
     HostNetAssoc, HostRuntimeState, NamespaceInventory, NetworkDomain, NetworkSegment, ObjectKind,
-    PodInventory, PodPlacement, ResponsibilityAssignment, RuntimeBinding, ServiceEntity,
-    ServiceInstance, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
+    PodInventory, PodPlacement, ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding,
+    ServiceEntity, ServiceInstance, Subject, Subsystem, SystemBoundary, TenantId, WorkloadEntity,
     WorkloadPodMembership,
 };
 use uuid::Uuid;
@@ -58,6 +58,7 @@ pub trait CatalogStore {
     fn upsert_host(&self, host: &HostInventory) -> StorageResult<()>;
     fn get_host(&self, host_id: Uuid) -> StorageResult<Option<HostInventory>>;
     fn list_hosts(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<HostInventory>>;
+    fn list_all_hosts(&self, page: Page) -> StorageResult<Vec<HostInventory>>;
 
     fn upsert_network_domain(&self, domain: &NetworkDomain) -> StorageResult<()>;
     fn get_network_domain(&self, network_domain_id: Uuid) -> StorageResult<Option<NetworkDomain>>;
@@ -78,6 +79,62 @@ pub trait CatalogStore {
     fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>>;
 }
 
+#[allow(async_fn_in_trait)]
+pub trait AsyncCatalogStore: Sync {
+    async fn upsert_business(&self, business: &BusinessDomain) -> StorageResult<()>;
+    async fn get_business(&self, business_id: Uuid) -> StorageResult<Option<BusinessDomain>>;
+    async fn list_businesses(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<BusinessDomain>>;
+    async fn upsert_system(&self, system: &SystemBoundary) -> StorageResult<()>;
+    async fn get_system(&self, system_id: Uuid) -> StorageResult<Option<SystemBoundary>>;
+    async fn upsert_subsystem(&self, subsystem: &Subsystem) -> StorageResult<()>;
+    async fn get_subsystem(&self, subsystem_id: Uuid) -> StorageResult<Option<Subsystem>>;
+    async fn upsert_service(&self, service: &ServiceEntity) -> StorageResult<()>;
+    async fn get_service(&self, service_id: Uuid) -> StorageResult<Option<ServiceEntity>>;
+    async fn list_services(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceEntity>>;
+    async fn upsert_cluster(&self, cluster: &ClusterInventory) -> StorageResult<()>;
+    async fn get_cluster(&self, cluster_id: Uuid) -> StorageResult<Option<ClusterInventory>>;
+    async fn upsert_namespace(&self, namespace: &NamespaceInventory) -> StorageResult<()>;
+    async fn get_namespace(&self, namespace_id: Uuid) -> StorageResult<Option<NamespaceInventory>>;
+    async fn upsert_workload(&self, workload: &WorkloadEntity) -> StorageResult<()>;
+    async fn get_workload(&self, workload_id: Uuid) -> StorageResult<Option<WorkloadEntity>>;
+    async fn upsert_pod(&self, pod: &PodInventory) -> StorageResult<()>;
+    async fn get_pod(&self, pod_id: Uuid) -> StorageResult<Option<PodInventory>>;
+    async fn upsert_host(&self, host: &HostInventory) -> StorageResult<()>;
+    async fn get_host(&self, host_id: Uuid) -> StorageResult<Option<HostInventory>>;
+    async fn list_hosts(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<HostInventory>>;
+    async fn list_all_hosts(&self, page: Page) -> StorageResult<Vec<HostInventory>>;
+    async fn upsert_network_domain(&self, domain: &NetworkDomain) -> StorageResult<()>;
+    async fn get_network_domain(
+        &self,
+        network_domain_id: Uuid,
+    ) -> StorageResult<Option<NetworkDomain>>;
+    async fn upsert_network_segment(&self, segment: &NetworkSegment) -> StorageResult<()>;
+    async fn get_network_segment(
+        &self,
+        network_segment_id: Uuid,
+    ) -> StorageResult<Option<NetworkSegment>>;
+    async fn list_network_segments(
+        &self,
+        tenant_id: TenantId,
+        page: Page,
+    ) -> StorageResult<Vec<NetworkSegment>>;
+    async fn upsert_subject(&self, subject: &Subject) -> StorageResult<()>;
+    async fn get_subject(&self, subject_id: Uuid) -> StorageResult<Option<Subject>>;
+    async fn list_subjects(&self, tenant_id: TenantId, page: Page) -> StorageResult<Vec<Subject>>;
+}
+
 pub trait RuntimeStore {
     fn insert_host_runtime_state(&self, state: &HostRuntimeState) -> StorageResult<()>;
     fn list_host_runtime_states(
@@ -86,14 +143,32 @@ pub trait RuntimeStore {
         page: Page,
     ) -> StorageResult<Vec<HostRuntimeState>>;
 
+    fn upsert_process_runtime_state(&self, state: &ProcessRuntimeState) -> StorageResult<()>;
+    fn list_process_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ProcessRuntimeState>>;
+
     fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()>;
     fn get_service_instance(&self, instance_id: Uuid) -> StorageResult<Option<ServiceInstance>>;
+    fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceInstance>>;
 
     fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()>;
     fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>>;
     fn list_runtime_bindings_for_instance(
         &self,
         instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>>;
+    fn list_runtime_bindings_for_object(
+        &self,
+        object_type: topology_domain::RuntimeObjectType,
+        object_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<RuntimeBinding>>;
 
@@ -106,6 +181,56 @@ pub trait RuntimeStore {
 
     fn upsert_host_net_assoc(&self, assoc: &HostNetAssoc) -> StorageResult<()>;
     fn list_host_net_assocs(&self, host_id: Uuid, page: Page) -> StorageResult<Vec<HostNetAssoc>>;
+}
+
+#[allow(async_fn_in_trait)]
+pub trait AsyncRuntimeStore: Sync {
+    async fn insert_host_runtime_state(&self, state: &HostRuntimeState) -> StorageResult<()>;
+    async fn list_host_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostRuntimeState>>;
+    async fn upsert_process_runtime_state(&self, state: &ProcessRuntimeState) -> StorageResult<()>;
+    async fn list_process_runtime_states(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ProcessRuntimeState>>;
+    async fn upsert_service_instance(&self, instance: &ServiceInstance) -> StorageResult<()>;
+    async fn get_service_instance(
+        &self,
+        instance_id: Uuid,
+    ) -> StorageResult<Option<ServiceInstance>>;
+    async fn list_service_instances(
+        &self,
+        service_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ServiceInstance>>;
+    async fn upsert_runtime_binding(&self, binding: &RuntimeBinding) -> StorageResult<()>;
+    async fn get_runtime_binding(&self, binding_id: Uuid) -> StorageResult<Option<RuntimeBinding>>;
+    async fn list_runtime_bindings_for_instance(
+        &self,
+        instance_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>>;
+    async fn list_runtime_bindings_for_object(
+        &self,
+        object_type: topology_domain::RuntimeObjectType,
+        object_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<RuntimeBinding>>;
+    async fn upsert_workload_pod_membership(
+        &self,
+        membership: &WorkloadPodMembership,
+    ) -> StorageResult<()>;
+    async fn upsert_pod_placement(&self, placement: &PodPlacement) -> StorageResult<()>;
+    async fn upsert_host_net_assoc(&self, assoc: &HostNetAssoc) -> StorageResult<()>;
+    async fn list_host_net_assocs(
+        &self,
+        host_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<HostNetAssoc>>;
 }
 
 pub trait GovernanceStore {
@@ -127,6 +252,24 @@ pub trait GovernanceStore {
     ) -> StorageResult<Vec<ResponsibilityAssignment>>;
 }
 
+#[allow(async_fn_in_trait)]
+pub trait AsyncGovernanceStore: Sync {
+    async fn upsert_responsibility_assignment(
+        &self,
+        assignment: &ResponsibilityAssignment,
+    ) -> StorageResult<()>;
+    async fn get_responsibility_assignment(
+        &self,
+        assignment_id: Uuid,
+    ) -> StorageResult<Option<ResponsibilityAssignment>>;
+    async fn list_responsibility_assignments_for_target(
+        &self,
+        target_kind: ObjectKind,
+        target_id: Uuid,
+        page: Page,
+    ) -> StorageResult<Vec<ResponsibilityAssignment>>;
+}
+
 pub trait SyncStore {
     fn upsert_external_identity_link(&self, link: &ExternalIdentityLink) -> StorageResult<()>;
     fn get_external_identity_link(
@@ -136,6 +279,21 @@ pub trait SyncStore {
 
     fn upsert_external_sync_cursor(&self, cursor: &ExternalSyncCursor) -> StorageResult<()>;
     fn get_external_sync_cursor(
+        &self,
+        cursor_id: Uuid,
+    ) -> StorageResult<Option<ExternalSyncCursor>>;
+}
+
+#[allow(async_fn_in_trait)]
+pub trait AsyncSyncStore: Sync {
+    async fn upsert_external_identity_link(&self, link: &ExternalIdentityLink)
+    -> StorageResult<()>;
+    async fn get_external_identity_link(
+        &self,
+        link_id: Uuid,
+    ) -> StorageResult<Option<ExternalIdentityLink>>;
+    async fn upsert_external_sync_cursor(&self, cursor: &ExternalSyncCursor) -> StorageResult<()>;
+    async fn get_external_sync_cursor(
         &self,
         cursor_id: Uuid,
     ) -> StorageResult<Option<ExternalSyncCursor>>;

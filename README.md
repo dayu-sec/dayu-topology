@@ -91,3 +91,40 @@ cargo run -p topology-app -- file fixtures/file-ingest/small-office.json
 文件格式规范见 [doc/external-integration/file-ingest-spec.md](./doc/external-integration/file-ingest-spec.md)。
 
 目标态外部输入数据示例放在 [fixtures/external-input/target](./fixtures/external-input/target)，协议规范见 [doc/external-integration/external-input-spec.md](./doc/external-integration/external-input-spec.md)。
+
+## PostgreSQL 开发环境
+
+repo 根下提供了最小 PostgreSQL 开发环境：
+
+```bash
+cd dayu-topology
+docker compose up -d
+```
+
+默认连接信息：
+
+- host: `127.0.0.1`
+- port: `55432`
+- database: `dayu_topology`
+- user: `dayu`
+- password: `dayu`
+
+当前用途：
+
+- 管理 `dayu-topology` 所需的 PostgreSQL 实例生命周期
+- 为后续真实 `PostgresExecutor` / `DATABASE_URL` backend 提供固定开发环境
+
+当前状态要点：
+
+- `topology-storage` 已补齐 `PostgresTopologyStore` 的 runtime repository
+- `postgres-mock` 已走完整 PostgreSQL repository 路径
+- `topology-app` 已支持 `postgres-live`，可直接把 replay 数据写入真实 PostgreSQL
+
+一键清库 + 重放 + 查库可直接执行：
+
+```bash
+cd dayu-topology
+python3 scripts/replay_pg_jsonl.py \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-edge.jsonl \
+  ../asset-twins-demo/warp-parse/data/out_dat/dayu-telemetry.jsonl
+```

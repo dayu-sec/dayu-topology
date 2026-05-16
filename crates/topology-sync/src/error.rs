@@ -1,4 +1,6 @@
 use orion_error::{conversion::ToStructError, prelude::*, runtime::OperationContext};
+use topology_api::ApiReason;
+use topology_domain::DomainReason;
 use topology_storage::StorageReason;
 
 pub type SyncError = StructError<SyncReason>;
@@ -6,6 +8,8 @@ pub type SyncResult<T> = Result<T, SyncError>;
 
 #[derive(Debug, Clone, PartialEq, OrionError)]
 pub enum SyncReason {
+    #[orion_error(identity = "sys.dayu.sync.input_load_failed")]
+    InputLoadFailed,
     #[orion_error(identity = "sys.dayu.sync.fetch_failed")]
     FetchFailed,
     #[orion_error(identity = "biz.dayu.sync.cursor_conflict")]
@@ -21,6 +25,31 @@ impl From<StorageReason> for SyncReason {
         match value {
             StorageReason::General(reason) => SyncReason::General(reason),
             _ => SyncReason::FetchFailed,
+        }
+    }
+}
+
+impl From<ApiReason> for SyncReason {
+    fn from(value: ApiReason) -> Self {
+        match value {
+            ApiReason::General(reason) => SyncReason::General(reason),
+            _ => SyncReason::FetchFailed,
+        }
+    }
+}
+
+impl From<DomainReason> for SyncReason {
+    fn from(value: DomainReason) -> Self {
+        match value {
+            DomainReason::SchemaInvalid
+            | DomainReason::SchemaUnsupported
+            | DomainReason::PayloadInvalid
+            | DomainReason::FieldMissing
+            | DomainReason::FieldInvalid => SyncReason::InputLoadFailed,
+            DomainReason::RefUnresolved | DomainReason::IdentityConflict => {
+                SyncReason::FetchFailed
+            }
+            DomainReason::General(reason) => SyncReason::General(reason),
         }
     }
 }

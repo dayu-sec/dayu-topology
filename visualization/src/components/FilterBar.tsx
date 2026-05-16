@@ -13,6 +13,7 @@ type Props = {
 const ALL_LAYERS: LayerKind[] = ['resource', 'governance'];
 
 const LAYOUT_OPTIONS: { value: LayoutName; label: string }[] = [
+  { value: 'concentric', label: '中心放射 (concentric)' },
   { value: 'dagre', label: '层次 (dagre)' },
   { value: 'cose-bilkent', label: '力导向 (cose)' },
 ];

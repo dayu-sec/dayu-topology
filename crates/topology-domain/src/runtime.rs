@@ -92,9 +92,12 @@ pub struct ProcessRuntimeState {
     pub tenant_id: TenantId,
     pub host_id: Uuid,
     pub container_id: Option<Uuid>,
+    pub external_ref: Option<String>,
     pub pid: i32,
     pub executable: String,
     pub command_line: Option<String>,
+    pub process_state: Option<String>,
+    pub memory_rss_kib: Option<i64>,
     pub started_at: DateTime<Utc>,
     pub observed_at: ObservedAt,
 }

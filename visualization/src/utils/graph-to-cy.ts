@@ -1,7 +1,7 @@
 import type { ElementDefinition } from 'cytoscape';
-import type { TopologyGraph, CyNodeData, CyEdgeData } from '../types/domain';
+import type { HostProcessTopologyGraph, CyNodeData, CyEdgeData } from '../types/domain';
 
-export function graphToCyElements(graph: TopologyGraph): ElementDefinition[] {
+export function graphToCyElements(graph: HostProcessTopologyGraph): ElementDefinition[] {
   const nodes: ElementDefinition[] = graph.nodes.map((n) => ({
     data: {
       id: n.id,

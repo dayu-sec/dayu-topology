@@ -8,6 +8,7 @@ const initialLayerVisibility = {
 
 const initialState: AppState = {
   graph: null,
+  hostTopology: null,
   loading: false,
   error: null,
   selectedNodeId: null,
@@ -22,6 +23,8 @@ function reducer(state: AppState, action: AppAction): AppState {
       return { ...state, loading: true, error: null };
     case 'FETCH_GRAPH_SUCCESS':
       return { ...state, loading: false, graph: action.graph };
+    case 'FETCH_HOST_TOPOLOGY_SUCCESS':
+      return { ...state, hostTopology: action.hostTopology };
     case 'FETCH_GRAPH_ERROR':
       return { ...state, loading: false, error: action.error };
     case 'SELECT_NODE':
