@@ -5,9 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
-    Confidence, DomainError, DomainReason, DomainResult, EnvironmentId, ObservedAt,
-    ResponsibilityRole, ServiceBoundary, ServiceType, SourceKind, SubjectType, TenantId,
-    ValidityWindow, WorkloadKind,
+    DomainError, DomainReason, DomainResult, EnvironmentId, ObservedAt, SourceKind, TenantId,
 };
 use orion_error::conversion::ToStructError;
 
@@ -26,6 +24,9 @@ const DAYU_INPUT_SCHEMA_FAMILIES: &[&str] = &[
     "manual",
     "correction",
 ];
+
+mod candidates;
+pub use candidates::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DayuInputEnvelope {
@@ -351,133 +352,7 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use chrono::Utc;
-    use orion_error::reason::ErrorIdentityProvider;
-    use serde_json::json;
-    use uuid::Uuid;
-
-    use crate::TenantId;
-
-    use super::{DayuInputEnvelope, DayuInputMode};
-
-    #[test]
-    fn dayu_input_validate_accepts_target_snapshot() {
-        let input: DayuInputEnvelope = serde_json::from_value(json!({
-            "schema": "dayu.in.edge.v1",
-            "source": {
-                "system": "warp-insight",
-                "producer": "agent-01",
-                "tenant": "demo",
-                "env": "prod"
-            },
-            "collect": {
-                "mode": "snapshot",
-                "snap_id": "snap-001",
-                "observed_at": "2026-04-26T02:20:30Z"
-            },
-            "payload": {
-                "hosts": []
-            }
-        }))
-        .unwrap();
-
-        input.validate().unwrap();
-        assert_eq!(input.schema_family(), Some("edge"));
-        assert!(matches!(input.collect.mode, DayuInputMode::Snapshot));
-    }
-
-    #[test]
-    fn dayu_input_rejects_snapshot_without_snap_id() {
-        let input: DayuInputEnvelope = serde_json::from_value(json!({
-            "schema": "dayu.in.edge.v1",
-            "source": {
-                "system": "warp-insight",
-                "producer": "agent-01",
-                "tenant": "demo"
-            },
-            "collect": {
-                "mode": "snapshot",
-                "observed_at": "2026-04-26T02:20:30Z"
-            },
-            "payload": {}
-        }))
-        .unwrap();
-
-        let err = input.validate().unwrap_err();
-        assert_eq!(err.reason().stable_code(), "biz.dayu.domain.field_missing");
-        assert!(
-            err.detail()
-                .as_deref()
-                .is_some_and(|detail| detail.contains("collect.snap_id"))
-        );
-    }
-
-    #[test]
-    fn dayu_input_uses_standard_snapshot_idempotency_key_as_ingest_id() {
-        let input: DayuInputEnvelope = serde_json::from_value(json!({
-            "schema": "dayu.in.edge.v1",
-            "source": {
-                "system": "warp-insight",
-                "producer": "agent-01",
-                "tenant": "demo",
-                "env": "prod"
-            },
-            "collect": {
-                "mode": "snapshot",
-                "snap_id": "snap-001",
-                "observed_at": "2026-04-26T02:20:30Z"
-            },
-            "payload": {}
-        }))
-        .unwrap();
-
-        let ingest = input.into_ingest_envelope(TenantId(Uuid::new_v4()), None, Utc::now());
-
-        assert_eq!(
-            ingest.ingest_id,
-            "dayu.in.edge.v1:warp-insight:agent-01:demo:prod:snap-001"
-        );
-        assert_eq!(
-            ingest.metadata.get("idempotency_key").map(String::as_str),
-            Some("dayu.in.edge.v1:warp-insight:agent-01:demo:prod:snap-001")
-        );
-    }
-
-    #[test]
-    fn dayu_input_accepts_short_source_aliases_and_numeric_res_ver() {
-        let input: DayuInputEnvelope = serde_json::from_value(json!({
-            "schema": "dayu.in.edge.v1",
-            "source": {
-                "kind": "edge",
-                "system": "warp-insight",
-                "producer": "agent-local-01",
-                "tenant_ref": "tenant-demo",
-                "env_ref": "office"
-            },
-            "collect": {
-                "mode": "snapshot",
-                "snap_id": "edge-snap-local-01",
-                "observed_at": "2026-05-12T03:16:04Z",
-                "collected_at": "2026-05-12T03:16:05Z",
-                "res_ver": 4
-            },
-            "payload": {
-                "host_name": "local-host"
-            }
-        }))
-        .unwrap();
-
-        input.validate().unwrap();
-        assert_eq!(input.source.tenant, "tenant-demo");
-        assert_eq!(input.source.env.as_deref(), Some("office"));
-        assert_eq!(input.collect.res_ver.as_deref(), Some("4"));
-        assert_eq!(
-            input.idempotency_key(),
-            "dayu.in.edge.v1:warp-insight:agent-local-01:tenant-demo:office:edge-snap-local-01"
-        );
-    }
-}
+mod tests;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IngestMode {
@@ -499,131 +374,4 @@ pub struct IngestEnvelope {
     pub payload_ref: Option<String>,
     pub payload_inline: Option<Value>,
     pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BusinessCatalogCandidate {
-    pub tenant_id: TenantId,
-    pub source_kind: SourceKind,
-    pub external_ref: Option<String>,
-    pub business_name: String,
-    pub system_name: Option<String>,
-    pub subsystem_name: Option<String>,
-    pub service_name: Option<String>,
-    pub service_type: Option<ServiceType>,
-    pub boundary: Option<ServiceBoundary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HostCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub external_ref: Option<String>,
-    pub host_name: String,
-    pub machine_id: Option<String>,
-    pub os_name: Option<String>,
-    pub os_version: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProcessRuntimeCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub host_name: Option<String>,
-    pub machine_id: Option<String>,
-    pub pid: i32,
-    pub executable: String,
-    pub command_line: Option<String>,
-    pub identity: Option<String>,
-    pub service_ref: Option<String>,
-    pub instance_key: Option<String>,
-    pub observed_at: Option<ObservedAt>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NetworkSegmentCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub segment_name: Option<String>,
-    pub cidr: Option<String>,
-    pub gateway_ip: Option<String>,
-    pub ip_addr: Option<String>,
-    pub host_name: Option<String>,
-    pub machine_id: Option<String>,
-    pub iface_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct HostTelemetryCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub host_name: Option<String>,
-    pub machine_id: Option<String>,
-    pub observed_at: ObservedAt,
-    pub metric_name: String,
-    pub value_i64: Option<i64>,
-    pub value_f64: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProcessTelemetryCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub host_name: Option<String>,
-    pub machine_id: Option<String>,
-    pub process_ref: String,
-    pub pid: i32,
-    pub observed_at: ObservedAt,
-    pub metric_name: String,
-    pub value_i64: Option<i64>,
-    pub value_string: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SubjectCandidate {
-    pub tenant_id: TenantId,
-    pub source_kind: SourceKind,
-    pub subject_type: SubjectType,
-    pub external_ref: Option<String>,
-    pub display_name: String,
-    pub email: Option<String>,
-    pub is_active: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkloadCandidate {
-    pub tenant_id: TenantId,
-    pub environment_id: Option<EnvironmentId>,
-    pub source_kind: SourceKind,
-    pub cluster_name: String,
-    pub namespace_name: String,
-    pub workload_kind: WorkloadKind,
-    pub workload_name: String,
-    pub service_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResponsibilityAssignmentCandidate {
-    pub tenant_id: TenantId,
-    pub source_kind: SourceKind,
-    pub subject_display_name: Option<String>,
-    pub subject_external_ref: Option<String>,
-    pub subject_email: Option<String>,
-    pub target_kind: crate::ObjectKind,
-    pub target_external_ref: Option<String>,
-    pub role: ResponsibilityRole,
-    pub validity: ValidityWindow,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolutionCandidate {
-    pub source_kind: SourceKind,
-    pub rule_hints: Vec<String>,
-    pub matched_identifiers: BTreeMap<String, String>,
-    pub confidence: Confidence,
 }

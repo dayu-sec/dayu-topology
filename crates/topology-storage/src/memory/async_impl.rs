@@ -1,74 +1,18 @@
 use topology_domain::{
-    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment, ObjectKind,
-    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, RuntimeObjectType,
-    ServiceEntity, ServiceInstance, Subject, TenantId,
+    HostInventory, HostNetAssoc, HostRuntimeState, NetworkDomain, NetworkSegment,
+    ProcessRuntimeState, ResponsibilityAssignment, RuntimeBinding, ServiceEntity, ServiceInstance,
+    Subject, TenantId,
 };
 use uuid::Uuid;
 
 use crate::{
     AsyncCatalogStore, AsyncGovernanceStore, AsyncRuntimeStore, CatalogStore, GovernanceStore,
-    IngestStore, Page, RuntimeStore, StorageResult, memory::AsyncIngestStore,
-    memory::IngestJobEntry, migrations::MIGRATIONS, not_configured,
+    Page, RuntimeStore, StorageResult,
 };
 
-mod sql;
+use super::{AsyncIngestStore, InMemoryTopologyStore, IngestJobEntry, IngestStore};
 
-pub trait PostgresExecutor: Clone {
-    fn exec(&self, sql: &str, params: &[String]) -> StorageResult<u64>;
-    fn query_rows(&self, sql: &str, params: &[String]) -> StorageResult<Vec<Vec<String>>>;
-    fn exec_batch(&self, sql: &str) -> StorageResult<()> {
-        self.exec(sql, &[]).map(|_| ())
-    }
-    fn reset_public_schema(&self) -> StorageResult<()> {
-        self.exec_batch(sql::RESET_PUBLIC_SCHEMA)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PostgresTopologyStore<E> {
-    executor: E,
-}
-
-impl<E> PostgresTopologyStore<E> {
-    pub fn new(executor: E) -> Self {
-        Self { executor }
-    }
-}
-
-impl<E> PostgresTopologyStore<E>
-where
-    E: PostgresExecutor,
-{
-    pub fn run_migrations(&self) -> StorageResult<()> {
-        for migration in MIGRATIONS {
-            self.executor.exec_batch(migration.sql)?;
-        }
-        Ok(())
-    }
-
-    pub fn reset_public_schema(&self) -> StorageResult<()> {
-        self.executor.reset_public_schema()?;
-        self.run_migrations()
-    }
-}
-
-impl PostgresTopologyStore<LivePostgresExecutor> {
-    pub async fn run_migrations_async(&self) -> StorageResult<()> {
-        for migration in MIGRATIONS {
-            self.executor.exec_batch_async(migration.sql).await?;
-        }
-        Ok(())
-    }
-
-    pub async fn reset_public_schema_async(&self) -> StorageResult<()> {
-        self.executor
-            .exec_batch_async(sql::RESET_PUBLIC_SCHEMA)
-            .await?;
-        self.run_migrations_async().await
-    }
-}
-
-impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+impl AsyncCatalogStore for InMemoryTopologyStore {
     async fn upsert_business(
         &self,
         business: &topology_domain::BusinessDomain,
@@ -213,7 +157,7 @@ impl AsyncCatalogStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
 }
 
-impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+impl AsyncRuntimeStore for InMemoryTopologyStore {
     async fn insert_host_runtime_state(&self, state: &HostRuntimeState) -> StorageResult<()> {
         RuntimeStore::insert_host_runtime_state(self, state)
     }
@@ -265,7 +209,7 @@ impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
     async fn list_runtime_bindings_for_object(
         &self,
-        object_type: RuntimeObjectType,
+        object_type: topology_domain::RuntimeObjectType,
         object_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<RuntimeBinding>> {
@@ -295,7 +239,7 @@ impl AsyncRuntimeStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
 }
 
-impl AsyncGovernanceStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+impl AsyncGovernanceStore for InMemoryTopologyStore {
     async fn upsert_responsibility_assignment(
         &self,
         assignment: &ResponsibilityAssignment,
@@ -310,7 +254,7 @@ impl AsyncGovernanceStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
     async fn list_responsibility_assignments_for_target(
         &self,
-        target_kind: ObjectKind,
+        target_kind: topology_domain::ObjectKind,
         target_id: Uuid,
         page: Page,
     ) -> StorageResult<Vec<ResponsibilityAssignment>> {
@@ -323,7 +267,7 @@ impl AsyncGovernanceStore for PostgresTopologyStore<MemoryPostgresExecutor> {
     }
 }
 
-impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {
+impl AsyncIngestStore for InMemoryTopologyStore {
     async fn record_ingest_job(&self, entry: IngestJobEntry) -> StorageResult<()> {
         IngestStore::record_ingest_job(self, entry)
     }
@@ -332,16 +276,3 @@ impl AsyncIngestStore for PostgresTopologyStore<MemoryPostgresExecutor> {
         IngestStore::get_ingest_job(self, ingest_id)
     }
 }
-
-mod sync_store;
-
-mod executors;
-pub use executors::{LivePostgresExecutor, MemoryPostgresExecutor, RecordingExecutor};
-
-mod live_async;
-
-mod row_decode;
-use row_decode::*;
-
-#[cfg(test)]
-mod tests;

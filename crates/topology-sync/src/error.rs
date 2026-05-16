@@ -46,9 +46,7 @@ impl From<DomainReason> for SyncReason {
             | DomainReason::PayloadInvalid
             | DomainReason::FieldMissing
             | DomainReason::FieldInvalid => SyncReason::InputLoadFailed,
-            DomainReason::RefUnresolved | DomainReason::IdentityConflict => {
-                SyncReason::FetchFailed
-            }
+            DomainReason::RefUnresolved | DomainReason::IdentityConflict => SyncReason::FetchFailed,
             DomainReason::General(reason) => SyncReason::General(reason),
         }
     }
